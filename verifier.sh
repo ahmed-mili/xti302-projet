@@ -412,6 +412,63 @@ test_C3_aucun_autre_sudo() {
     fi
 }
 
+# inscriptible_par_non_root <chemin> : renvoie 0 si le groupe OU les autres
+# ont le droit d'écrire sur le chemin. stat -c %A donne par exemple
+# "-rwxr-xr-x" : le 6e caractère est le droit w du groupe, le 9e celui des autres.
+inscriptible_par_non_root() {
+    local droits
+
+    droits="$(stat -c '%A' "$1")"
+    if [ "${droits:5:1}" = "w" ] || [ "${droits:8:1}" = "w" ]; then
+        return 0
+    fi
+    return 1
+}
+
+# test_C3_chemin_sudo_protege : la règle sudo de support vise un chemin précis.
+# Si quelqu'un d'autre que root pouvait modifier ce script, ou renommer l'un
+# de ses dossiers parents, il ferait exécuter ce qu'il veut en root. On exige
+# donc :
+#   - /usr/local/sbin/analyse_logs.sh est un vrai fichier (pas un lien),
+#     appartient à root:root et n'est inscriptible ni par le groupe ni par les autres ;
+#   - les dossiers /, /usr, /usr/local et /usr/local/sbin appartiennent à root
+#     et ne sont inscriptibles ni par le groupe ni par les autres.
+# Sur Debian, /usr/local et ses sous-dossiers sont parfois en root:staff 2775 :
+# installer.sh retire donc l'écriture de groupe, plutôt que de compter sur le
+# fait que le groupe staff soit vide.
+test_C3_chemin_sudo_protege() {
+    local script="/usr/local/sbin/analyse_logs.sh"
+    local problemes=""
+    local dossier
+
+    if [ ! -f "$script" ] || [ -L "$script" ]; then
+        ko "C3" "chemin sudo : ${script} absent ou lien symbolique"
+        return
+    fi
+
+    if [ "$(stat -c '%U:%G' "$script")" != "root:root" ]; then
+        problemes="${problemes} ${script} appartient à $(stat -c '%U:%G' "$script") ;"
+    fi
+    if inscriptible_par_non_root "$script"; then
+        problemes="${problemes} ${script} inscriptible par le groupe ou les autres ;"
+    fi
+
+    for dossier in / /usr /usr/local /usr/local/sbin; do
+        if [ "$(stat -c '%U' "$dossier")" != "root" ]; then
+            problemes="${problemes} ${dossier} n'appartient pas à root ;"
+        fi
+        if inscriptible_par_non_root "$dossier"; then
+            problemes="${problemes} ${dossier} inscriptible par le groupe ou les autres ;"
+        fi
+    done
+
+    if [ -z "$problemes" ]; then
+        ok "C3" "chemin de la règle sudo protégé (script et dossiers parents à root seul)"
+    else
+        ko "C3" "chemin de la règle sudo :${problemes}"
+    fi
+}
+
 # ---------------------------------------------------------------------------
 # C4 : root verrouillé, homes privés
 # ---------------------------------------------------------------------------
@@ -495,13 +552,24 @@ test_S2_root_interdit() {
 }
 
 # test_S3_allowgroups : seul le groupe acces_ssh a le droit de se connecter.
+# "sshd -T" écrit UNE ligne par groupe : avec deux groupes autorisés on
+# aurait deux lignes "allowgroups ...". L'ensemble des lignes allowgroups doit
+# donc être exactement la ligne "allowgroups acces_ssh". Aucune ligne
+# allowusers ne doit exister : un utilisateur nommé là passerait au travers
+# du filtre par groupe.
 test_S3_allowgroups() {
-    # La ligne entière doit être exactement "allowgroups acces_ssh" : un
-    # second groupe sur la ligne ferait échouer le test (grep -x = ligne entière).
-    if sshd -T 2>/dev/null | grep -qx 'allowgroups acces_ssh'; then
-        ok "S3" "SSH : réservé au groupe acces_ssh"
+    local lignes_groupes
+    local lignes_utilisateurs
+
+    lignes_groupes="$(sshd -T 2>/dev/null | grep '^allowgroups ')"
+    lignes_utilisateurs="$(sshd -T 2>/dev/null | grep '^allowusers ')"
+
+    if [ "$lignes_groupes" != "allowgroups acces_ssh" ]; then
+        ko "S3" "SSH : lignes allowgroups = $(echo "$lignes_groupes" | tr '\n' ';') (attendu exactement allowgroups acces_ssh)"
+    elif [ -n "$lignes_utilisateurs" ]; then
+        ko "S3" "SSH : allowusers est défini (${lignes_utilisateurs}), il contourne le filtre par groupe"
     else
-        ko "S3" "SSH : allowgroups=$(valeur_sshd allowgroups) (attendu exactement acces_ssh)"
+        ok "S3" "SSH : réservé au groupe acces_ssh (aucun allowusers)"
     fi
 }
 
@@ -689,6 +757,118 @@ test_J3_journal_persistant() {
 }
 
 # ---------------------------------------------------------------------------
+# J4 : analyse des journaux SSH
+# ---------------------------------------------------------------------------
+
+# Script testé (la copie du dépôt, lancée avec bash) et journal d'exemple du TP.
+SCRIPT_ANALYSE="${DOSSIER_DEPOT}/analyse_logs.sh"
+JOURNAL_EXEMPLE="${DOSSIER_DEPOT}/tests/ssh_exemple_debian13.log"
+
+# test_J4_seuil_depasse : avec un seuil de 5, le journal d'exemple doit donner
+# le code 2 et une ligne ALERTE qui cite 203.0.113.45 (l'adresse qui attaque).
+test_J4_seuil_depasse() {
+    local sortie
+    local code
+
+    sortie="$(bash "$SCRIPT_ANALYSE" -f "$JOURNAL_EXEMPLE" -s 5 2>&1)"
+    code=$?
+
+    if [ "$code" -eq 2 ] && echo "$sortie" | grep -q 'ALERTE.*203\.0\.113\.45'; then
+        ok "J4" "analyse : seuil 5 dépassé, code 2 et ALERTE sur 203.0.113.45"
+    else
+        ko "J4" "analyse : seuil 5, code ${code} (attendu 2) ou ligne ALERTE 203.0.113.45 absente"
+    fi
+}
+
+# test_J4_sous_le_seuil : avec un seuil de 100 personne ne l'atteint, code 0.
+test_J4_sous_le_seuil() {
+    local sortie
+    local code
+
+    sortie="$(bash "$SCRIPT_ANALYSE" -f "$JOURNAL_EXEMPLE" -s 100 2>&1)"
+    code=$?
+
+    if [ "$code" -eq 0 ] && ! echo "$sortie" | grep -q 'ALERTE'; then
+        ok "J4" "analyse : seuil 100 non atteint, code 0 et pas d'ALERTE"
+    else
+        ko "J4" "analyse : seuil 100, code ${code} (attendu 0) ou ALERTE affichée"
+    fi
+}
+
+# test_J4_journal_vide : un journal vide n'est pas une erreur (code 0, pas d'ALERTE).
+test_J4_journal_vide() {
+    local sortie
+    local code
+
+    sortie="$(bash "$SCRIPT_ANALYSE" -f /dev/null 2>&1)"
+    code=$?
+
+    if [ "$code" -eq 0 ] && ! echo "$sortie" | grep -q 'ALERTE'; then
+        ok "J4" "analyse : journal vide, code 0 et rien de compté"
+    else
+        ko "J4" "analyse : journal vide, code ${code} (attendu 0) ou ALERTE affichée"
+    fi
+}
+
+# test_J4_proprietaire_root : le script installé appartient à root:root et
+# seul root peut l'écrire (support le lance en root via sudo).
+test_J4_proprietaire_root() {
+    local script="/usr/local/sbin/analyse_logs.sh"
+
+    if [ ! -f "$script" ]; then
+        ko "J4" "analyse : ${script} absent"
+    elif [ "$(stat -c '%U:%G' "$script")" != "root:root" ]; then
+        ko "J4" "analyse : ${script} appartient à $(stat -c '%U:%G' "$script") (attendu root:root)"
+    elif inscriptible_par_non_root "$script"; then
+        ko "J4" "analyse : ${script} est inscriptible par le groupe ou les autres"
+    else
+        ok "J4" "analyse : ${script} appartient à root:root, écriture réservée à root"
+    fi
+}
+
+# test_J4_sshd_session : Debian 13 écrit les connexions sous le nom
+# sshd-session (et plus sshd). La section "Connexions réussies" doit donc
+# lister alice et etu, qui n'apparaissent dans le journal d'exemple que par
+# des lignes sshd-session. sed -n '/début/,/fin/p' garde la seule section voulue.
+test_J4_sshd_session() {
+    local section
+
+    section="$(bash "$SCRIPT_ANALYSE" -f "$JOURNAL_EXEMPLE" 2>&1 | sed -n '/^=== Connexions réussies/,/^=== Bilan/p')"
+
+    if echo "$section" | grep -qw 'alice' && echo "$section" | grep -qw 'etu'; then
+        ok "J4" "analyse : connexions réussies de alice et etu lues (sshd-session)"
+    else
+        ko "J4" "analyse : alice et etu absents de la section Connexions réussies"
+    fi
+}
+
+# test_J4_support_sans_f : la règle sudo de support accepte n'importe quel
+# argument. Le script doit donc refuser -f pour support, sinon support
+# ferait lire n'importe quel fichier à root. On lance exactement ce que
+# ferait support : sudo -u support sudo -n ... -f /etc/shadow. La commande
+# doit échouer, et aucune ligne de /etc/shadow ne doit apparaître.
+test_J4_support_sans_f() {
+    local sortie
+    local code
+
+    sortie="$(sudo -u support sudo -n /usr/local/sbin/analyse_logs.sh -f /etc/shadow 2>&1)"
+    code=$?
+
+    # grep -F : texte brut ; -x : ligne entière ; -f : les motifs sont les lignes de /etc/shadow.
+    # On exige le code 1 ET le message de refus du script : un échec de sudo
+    # (script absent, règle absente) ne doit pas passer pour un refus réussi.
+    if [ "$code" -eq 0 ]; then
+        ko "J4" "support a pu lancer analyse_logs.sh -f /etc/shadow (code 0)"
+    elif echo "$sortie" | grep -qFxf /etc/shadow; then
+        ko "J4" "support a obtenu des lignes de /etc/shadow"
+    elif [ "$code" -ne 1 ] || ! echo "$sortie" | grep -q 'interdite'; then
+        ko "J4" "support : -f échoue mais pas à cause du refus du script (code ${code}) : ${sortie}"
+    else
+        ok "J4" "support ne peut pas utiliser -f (refusé, code ${code}, rien de /etc/shadow)"
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # D1 : mises à jour automatiques
 # ---------------------------------------------------------------------------
 
@@ -727,6 +907,7 @@ main() {
     test_C3_admins_sudo
     test_C3_support_restreint
     test_C3_aucun_autre_sudo
+    test_C3_chemin_sudo_protege
     test_C4_root_verrouille
     test_C4_homes_prives
     test_S1_cle_seule
@@ -741,6 +922,12 @@ main() {
     test_J2_au_demarrage
     test_J2_regles_fail2ban_apres_rechargement
     test_J3_journal_persistant
+    test_J4_seuil_depasse
+    test_J4_sous_le_seuil
+    test_J4_journal_vide
+    test_J4_proprietaire_root
+    test_J4_sshd_session
+    test_J4_support_sans_f
     test_D1_mises_a_jour_auto
 
     echo "--- ${NB_OK} / ${NB_TESTS} tests réussis"

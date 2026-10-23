@@ -262,6 +262,21 @@ installer_mises_a_jour() {
     echo "Mises à jour automatiques actives."
 }
 
+# installer_analyse_logs : copie analyse_logs.sh dans /usr/local/sbin (J4).
+# Le compte support le lance en root avec sudo : seul root doit pouvoir le
+# modifier, et seul root doit pouvoir renommer ses dossiers parents. Le script
+# est donc en root:root 0755. Sur Debian, /usr/local et /usr/local/sbin sont
+# parfois en root:staff 2775 (écriture pour le groupe staff) : on retire
+# l'écriture de groupe : install -d crée les dossiers s'ils manquent et les
+# remet en root:root 0755, plutôt que de compter sur un groupe staff vide.
+# Relancer le script ne change rien de plus.
+installer_analyse_logs() {
+    echo "==> Analyse des journaux"
+    install -d -o root -g root -m 0755 /usr/local /usr/local/sbin
+    install -o root -g root -m 0755 "${DOSSIER_DEPOT}/analyse_logs.sh" /usr/local/sbin/analyse_logs.sh
+    echo "analyse_logs.sh installé dans /usr/local/sbin."
+}
+
 # ---------------------------------------------------------------------------
 # Programme principal
 # ---------------------------------------------------------------------------
@@ -280,6 +295,7 @@ main() {
     installer_fail2ban
     installer_journal
     installer_mises_a_jour
+    installer_analyse_logs
     echo "Installation terminée."
 }
 

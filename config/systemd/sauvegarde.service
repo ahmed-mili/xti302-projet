@@ -1,0 +1,10 @@
+# Service de sauvegarde (exigence B2). Il est lancé par sauvegarde.timer.
+# Type=oneshot : le service fait son travail puis s'arrête.
+[Unit]
+Description=Sauvegarde versionnée de /etc et /srv
+# Le disque doit être monté avant la sauvegarde.
+RequiresMountsFor=/sauvegardes
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/sauvegarde.sh

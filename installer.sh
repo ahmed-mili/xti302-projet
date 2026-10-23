@@ -14,6 +14,12 @@ set -euo pipefail
 # Dossier du dépôt : le script est à sa racine.
 DOSSIER_DEPOT="$(cd "$(dirname "$0")" && pwd)"
 
+# Disque de sauvegarde : le second disque de la VM (jamais /dev/sda, le système).
+DISQUE_SAUVEGARDE="/dev/sdb"
+PARTITION_SAUVEGARDE="${DISQUE_SAUVEGARDE}1"
+ETIQUETTE_SAUVEGARDE="sauvegardes"
+POINT_DE_MONTAGE="/sauvegardes"
+
 # ---------------------------------------------------------------------------
 # Vérifications de départ
 # ---------------------------------------------------------------------------
@@ -47,13 +53,14 @@ verifier_root() {
 #   acl = droits sur /srv ; sudo = accès admin ;
 #   fail2ban + python3-systemd = bannir les adresses qui échouent en SSH (il lit
 #   le journal systemd) ; nftables = pare-feu ;
-#   unattended-upgrades = mises à jour de sécurité automatiques.
+#   unattended-upgrades = mises à jour de sécurité automatiques ;
+#   rsync = copie des sauvegardes.
 # Relancer ne réinstalle rien.
 installer_paquets() {
     echo "==> Paquets"
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -qq
-    apt-get install -y -qq acl sudo fail2ban python3-systemd nftables unattended-upgrades
+    apt-get install -y -qq acl sudo fail2ban python3-systemd nftables unattended-upgrades rsync
 }
 
 # installer_comptes : crée les groupes, les comptes, les clés et /srv.
@@ -277,6 +284,135 @@ installer_analyse_logs() {
     echo "analyse_logs.sh installé dans /usr/local/sbin."
 }
 
+# disque_est_vide : renvoie 0 seulement si le disque de sauvegarde n'a ni table
+# de partitions, ni système de fichiers, ni partition. C'est LA garde qui
+# empêche de reformater un disque qui contient déjà des sauvegardes.
+#   - wipefs --no-act liste toutes les signatures du disque (table de
+#     partitions, système de fichiers...) sans RIEN écrire ; vide = vierge ;
+#   - lsblk affiche une ligne pour le disque et une par partition : plus d'une
+#     ligne veut dire qu'il y a déjà une partition.
+disque_est_vide() {
+    local signatures
+    local nombre_de_lignes
+
+    signatures="$(wipefs --no-act "$DISQUE_SAUVEGARDE")"
+    nombre_de_lignes="$(lsblk -n -o NAME "$DISQUE_SAUVEGARDE" | wc -l)"
+
+    if [ -z "$signatures" ] && [ "$nombre_de_lignes" -eq 1 ]; then
+        return 0
+    fi
+    return 1
+}
+
+# preparer_disque_vierge : crée une partition unique qui occupe tout le disque
+# (table GPT, démarrage à 1 MiB), puis y met un système de fichiers ext4 avec
+# l'étiquette "sauvegardes". Appelée seulement si disque_est_vide est vrai.
+preparer_disque_vierge() {
+    echo "${DISQUE_SAUVEGARDE} est vierge : création de la partition et du système de fichiers."
+
+    # sfdisk lit un petit script : "label: gpt" crée la table, ",,L" crée une
+    # partition de type Linux qui commence au début libre et prend tout.
+    printf 'label: gpt\n,,L\n' | sfdisk --quiet "$DISQUE_SAUVEGARDE"
+
+    # On attend que le noyau et udev aient créé /dev/sdb1.
+    udevadm settle
+    if [ ! -b "$PARTITION_SAUVEGARDE" ]; then
+        erreur "${PARTITION_SAUVEGARDE} n'existe pas après le partitionnement"
+        exit 1
+    fi
+
+    mkfs.ext4 -q -L "$ETIQUETTE_SAUVEGARDE" "$PARTITION_SAUVEGARDE"
+}
+
+# installer_disque_sauvegarde : prépare et monte le disque de sauvegarde (B1).
+# Règle d'or : si le disque contient déjà quelque chose, on n'y touche pas, ce
+# qui permet de relancer installer.sh sans perdre les versions existantes.
+# Le montage se fait par UUID dans /etc/fstab (le nom /dev/sdb peut changer
+# d'un démarrage à l'autre, l'UUID non) avec nofail (la VM démarre même si le
+# disque est absent).
+installer_disque_sauvegarde() {
+    echo "==> Disque de sauvegarde"
+    local partition
+    local uuid
+    local source_racine
+
+    if [ ! -b "$DISQUE_SAUVEGARDE" ]; then
+        erreur "${DISQUE_SAUVEGARDE} est introuvable : le second disque n'est pas branché"
+        exit 1
+    fi
+
+    # Garde-fou : on ne touche jamais au disque qui porte le système.
+    source_racine="$(findmnt -n -o SOURCE /)"
+    if [ "${source_racine#"$DISQUE_SAUVEGARDE"}" != "$source_racine" ]; then
+        erreur "${DISQUE_SAUVEGARDE} porte le système (/ est sur ${source_racine}) : on n'y touche pas"
+        exit 1
+    fi
+
+    if disque_est_vide; then
+        preparer_disque_vierge
+    else
+        echo "${DISQUE_SAUVEGARDE} contient déjà une table de partitions ou un système de fichiers : on n'y touche pas."
+    fi
+
+    # On retrouve la partition par son étiquette. Elle doit être sur le
+    # second disque : sinon on s'arrête plutôt que de monter autre chose.
+    partition="$(blkid -L "$ETIQUETTE_SAUVEGARDE" || true)"
+    if [ -z "$partition" ] || [ "${partition#"$DISQUE_SAUVEGARDE"}" = "$partition" ]; then
+        erreur "aucun système de fichiers \"${ETIQUETTE_SAUVEGARDE}\" sur ${DISQUE_SAUVEGARDE} : rien n'a été modifié"
+        exit 1
+    fi
+    uuid="$(blkid -s UUID -o value "$partition")"
+
+    mkdir -p "$POINT_DE_MONTAGE"
+
+    # On ajoute la ligne fstab seulement si l'UUID n'y est pas déjà.
+    if ! grep -q "^UUID=${uuid}[[:space:]]" /etc/fstab; then
+        echo "UUID=${uuid} ${POINT_DE_MONTAGE} ext4 defaults,nofail 0 2" >> /etc/fstab
+        echo "ligne ajoutée dans /etc/fstab pour ${partition}."
+    fi
+    # systemd génère ses unités de montage depuis fstab : on lui fait relire.
+    systemctl daemon-reload
+
+    if ! mountpoint -q "$POINT_DE_MONTAGE"; then
+        mount "$POINT_DE_MONTAGE"
+    fi
+
+    # Seul root accède aux sauvegardes (B3). On le fait après le montage :
+    # c'est la racine du disque qu'on protège, pas le dossier vide dessous.
+    chown root:root "$POINT_DE_MONTAGE"
+    chmod 0700 "$POINT_DE_MONTAGE"
+    install -d -o root -g root -m 0700 "${POINT_DE_MONTAGE}/versions"
+    echo "Disque de sauvegarde monté sur ${POINT_DE_MONTAGE}."
+}
+
+# installer_sauvegarde : installe sauvegarde.sh et son minuteur (B1, B2).
+# Le script est en root:root 0755 dans /usr/local/sbin, comme analyse_logs.sh.
+# Le timer lance la sauvegarde chaque nuit. Une première sauvegarde est faite
+# tout de suite SEULEMENT s'il n'y a encore aucune version : relancer
+# installer.sh ne crée donc pas de version en plus.
+installer_sauvegarde() {
+    echo "==> Sauvegarde"
+    local nombre_de_versions
+
+    install -d -o root -g root -m 0755 /usr/local /usr/local/sbin
+    install -o root -g root -m 0755 "${DOSSIER_DEPOT}/sauvegarde.sh" /usr/local/sbin/sauvegarde.sh
+    install -o root -g root -m 0644 "${DOSSIER_DEPOT}/config/systemd/sauvegarde.service" /etc/systemd/system/sauvegarde.service
+    install -o root -g root -m 0644 "${DOSSIER_DEPOT}/config/systemd/sauvegarde.timer" /etc/systemd/system/sauvegarde.timer
+
+    systemctl daemon-reload
+    systemctl enable --now sauvegarde.timer
+
+    # grep -c compte les versions datées ; il rend 1 quand il en trouve 0,
+    # d'où le "|| true" (sans lui, set -e arrêterait le script).
+    nombre_de_versions="$(find "${POINT_DE_MONTAGE}/versions" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | grep -cE '^[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{6}$' || true)"
+    if [ "$nombre_de_versions" -eq 0 ]; then
+        echo "Aucune version : première sauvegarde."
+        /usr/local/sbin/sauvegarde.sh
+    else
+        echo "${nombre_de_versions} version(s) déjà présente(s) : pas de nouvelle sauvegarde."
+    fi
+}
+
 # ---------------------------------------------------------------------------
 # Programme principal
 # ---------------------------------------------------------------------------
@@ -296,6 +432,8 @@ main() {
     installer_journal
     installer_mises_a_jour
     installer_analyse_logs
+    installer_disque_sauvegarde
+    installer_sauvegarde
     echo "Installation terminée."
 }
 

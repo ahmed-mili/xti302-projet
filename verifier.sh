@@ -42,7 +42,6 @@ ko() {
 
 # peut_lire <login> <chemin> : renvoie 0 si l'utilisateur peut lire le chemin.
 # Pour un répertoire, lire ne suffit pas : il faut aussi pouvoir le traverser (x).
-# shellcheck disable=SC2317  # pas encore appelée : réservée aux tests des tâches suivantes
 peut_lire() {
     local login="$1"
     local chemin="$2"
@@ -911,6 +910,198 @@ test_D1_mises_a_jour_auto() {
 }
 
 # ---------------------------------------------------------------------------
+# B1 à B4 : sauvegarde versionnée
+# ---------------------------------------------------------------------------
+
+# Disque de sauvegarde et dossier des versions.
+POINT_SAUVEGARDE="/sauvegardes"
+DOSSIER_VERSIONS="${POINT_SAUVEGARDE}/versions"
+
+# lister_versions : affiche les noms de versions (format AAAA-MM-JJ_HHMMSS),
+# de la plus ancienne à la plus récente, une par ligne. Ce format se trie dans
+# l'ordre alphabétique comme dans l'ordre du temps.
+lister_versions() {
+    find "$DOSSIER_VERSIONS" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{6}$' | sort
+}
+
+# test_B1_disque_monte : /sauvegardes est monté depuis le second disque, et
+# /etc/fstab le monte par UUID avec l'option nofail (la VM démarre même si le
+# disque manque).
+test_B1_disque_monte() {
+    local source
+    local uuid_reel
+    local ligne_fstab
+
+    source="$(findmnt -n -o SOURCE "$POINT_SAUVEGARDE" 2>/dev/null)"
+    ligne_fstab="$(grep -E "^UUID=[^[:space:]]+[[:space:]]+${POINT_SAUVEGARDE}[[:space:]]" /etc/fstab)"
+
+    if [ "$source" != "/dev/sdb1" ] && [ "$source" != "/dev/sdb" ]; then
+        ko "B1" "disque : ${POINT_SAUVEGARDE} n'est pas monté depuis /dev/sdb (source : ${source:-aucune})"
+        return
+    fi
+
+    if [ -z "$ligne_fstab" ]; then
+        ko "B1" "disque : pas d'entrée UUID= pour ${POINT_SAUVEGARDE} dans /etc/fstab"
+        return
+    fi
+
+    if ! echo "$ligne_fstab" | grep -q 'nofail'; then
+        ko "B1" "disque : l'entrée fstab n'a pas l'option nofail"
+        return
+    fi
+
+    # L'UUID écrit dans fstab doit être celui du disque monté.
+    uuid_reel="$(blkid -s UUID -o value "$source")"
+    if ! echo "$ligne_fstab" | grep -q "^UUID=${uuid_reel}[[:space:]]"; then
+        ko "B1" "disque : l'UUID de fstab n'est pas celui de ${source} (${uuid_reel})"
+        return
+    fi
+
+    ok "B1" "disque : ${source} monté sur ${POINT_SAUVEGARDE}, fstab par UUID avec nofail"
+}
+
+# test_B1_versions_datees : au moins deux versions datées (AAAA-MM-JJ_HHMMSS).
+test_B1_versions_datees() {
+    local nombre
+
+    nombre="$(lister_versions | wc -l)"
+
+    if [ "$nombre" -ge 2 ]; then
+        ok "B1" "versions : ${nombre} versions datées dans ${DOSSIER_VERSIONS}"
+    else
+        ko "B1" "versions : ${nombre} version(s) datée(s) dans ${DOSSIER_VERSIONS} (2 attendues au moins)"
+    fi
+}
+
+# test_B1_incrementale : un fichier inchangé de etc/ a le même numéro d'inode
+# dans les deux dernières versions. C'est la preuve des liens durs de
+# --link-dest : le fichier n'est stocké qu'une fois sur le disque.
+test_B1_incrementale() {
+    local avant_derniere
+    local derniere
+    local inode_avant
+    local inode_dernier
+
+    avant_derniere="$(lister_versions | tail -n 2 | head -n 1)"
+    derniere="$(lister_versions | tail -n 1)"
+
+    if [ -z "$avant_derniere" ] || [ "$avant_derniere" = "$derniere" ]; then
+        ko "B1" "incrémentale : il faut deux versions pour comparer"
+        return
+    fi
+
+    inode_avant="$(stat -c %i "${DOSSIER_VERSIONS}/${avant_derniere}/etc/hostname" 2>/dev/null)"
+    inode_dernier="$(stat -c %i "${DOSSIER_VERSIONS}/${derniere}/etc/hostname" 2>/dev/null)"
+
+    if [ -n "$inode_avant" ] && [ "$inode_avant" = "$inode_dernier" ]; then
+        ok "B1" "incrémentale : etc/hostname a le même inode (${inode_dernier}) dans les deux dernières versions"
+    else
+        ko "B1" "incrémentale : etc/hostname a des inodes différents (${inode_avant:-absent} / ${inode_dernier:-absent})"
+    fi
+}
+
+# test_B1_acl_conservees : la sauvegarde garde les ACL de /srv/projets
+# (option -A de rsync) : la dernière version contient encore group:dev:rwx.
+test_B1_acl_conservees() {
+    local acl
+
+    acl="$(getfacl -c "${DOSSIER_VERSIONS}/derniere/srv/projets" 2>/dev/null)"
+
+    if echo "$acl" | grep -qx 'group:dev:rwx'; then
+        ok "B1" "ACL conservées : srv/projets de la dernière version contient group:dev:rwx"
+    else
+        ko "B1" "ACL conservées : group:dev:rwx absent de derniere/srv/projets"
+    fi
+}
+
+# test_B1_rotation : le script garde 7 versions (la valeur est écrite dans
+# sauvegarde.sh) et il n'y en a pas plus de 7 sur le disque.
+test_B1_rotation() {
+    local nombre
+
+    nombre="$(lister_versions | wc -l)"
+
+    if ! grep -qx 'NB_VERSIONS_GARDEES=7' "${DOSSIER_DEPOT}/sauvegarde.sh" 2>/dev/null; then
+        ko "B1" "rotation : NB_VERSIONS_GARDEES=7 absent de sauvegarde.sh"
+    elif [ "$nombre" -gt 7 ]; then
+        ko "B1" "rotation : ${nombre} versions sur le disque (7 au plus)"
+    else
+        ok "B1" "rotation : 7 versions gardées au plus (${nombre} présentes)"
+    fi
+}
+
+# test_B2_timer_actif : le minuteur de sauvegarde est activé au démarrage et
+# en cours d'attente.
+test_B2_timer_actif() {
+    local active
+    local active_demarrage
+
+    active_demarrage="$(systemctl is-enabled sauvegarde.timer 2>/dev/null)"
+    active="$(systemctl is-active sauvegarde.timer 2>/dev/null)"
+
+    if [ "$active_demarrage" = "enabled" ] && [ "$active" = "active" ]; then
+        ok "B2" "planification : sauvegarde.timer activé (enabled) et actif"
+    else
+        ko "B2" "planification : sauvegarde.timer ${active_demarrage:-absent} / ${active:-absent} (enabled / active attendus)"
+    fi
+}
+
+# test_B2_journalisee : le journal contient une ligne de fin de sauvegarde,
+# écrite par "logger -t sauvegarde".
+test_B2_journalisee() {
+    if journalctl -t sauvegarde -o cat --no-pager 2>/dev/null | grep -q 'sauvegarde terminée'; then
+        ok "B2" "journal : une ligne « sauvegarde terminée » dans journalctl -t sauvegarde"
+    else
+        ko "B2" "journal : aucune ligne « sauvegarde terminée » dans journalctl -t sauvegarde"
+    fi
+}
+
+# test_B3_acces_admins : /sauvegardes est à root:root en 0700 : seuls root et
+# les admins (par sudo) y accèdent ; un développeur ne peut pas le lire.
+test_B3_acces_admins() {
+    local droits
+
+    droits="$(stat -c '%U:%G %a' "$POINT_SAUVEGARDE" 2>/dev/null)"
+
+    if [ "$droits" != "root:root 700" ]; then
+        ko "B3" "accès : ${POINT_SAUVEGARDE} est en ${droits:-absent} (root:root 700 attendu)"
+    elif peut_lire jdupont "$POINT_SAUVEGARDE"; then
+        ko "B3" "accès : jdupont peut lire ${POINT_SAUVEGARDE}"
+    else
+        ok "B3" "accès : ${POINT_SAUVEGARDE} en root:root 700, jdupont ne peut pas le lire"
+    fi
+}
+
+# test_B4_restauration : on copie etc/hostname de la plus ancienne version vers
+# un fichier temporaire et on le compare au vrai /etc/hostname. Le fichier
+# temporaire est supprimé aussitôt : le système n'est pas modifié.
+test_B4_restauration() {
+    local plus_ancienne
+    local temporaire
+    local resultat
+
+    plus_ancienne="$(lister_versions | head -n 1)"
+    if [ -z "$plus_ancienne" ]; then
+        ko "B4" "restauration : aucune version à restaurer"
+        return
+    fi
+
+    temporaire="$(mktemp)"
+    if cp -a "${DOSSIER_VERSIONS}/${plus_ancienne}/etc/hostname" "$temporaire" 2>/dev/null && cmp -s "$temporaire" /etc/hostname; then
+        resultat="ok"
+    else
+        resultat="ko"
+    fi
+    rm -f "$temporaire"
+
+    if [ "$resultat" = "ok" ]; then
+        ok "B4" "restauration : etc/hostname de la version ${plus_ancienne} est identique à /etc/hostname"
+    else
+        ko "B4" "restauration : etc/hostname de la version ${plus_ancienne} absent ou différent de /etc/hostname"
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # Programme principal
 # ---------------------------------------------------------------------------
 
@@ -952,6 +1143,15 @@ main() {
     test_J4_sshd_session
     test_J4_support_sans_f
     test_D1_mises_a_jour_auto
+    test_B1_disque_monte
+    test_B1_versions_datees
+    test_B1_incrementale
+    test_B1_acl_conservees
+    test_B1_rotation
+    test_B2_timer_actif
+    test_B2_journalisee
+    test_B3_acces_admins
+    test_B4_restauration
 
     echo "--- ${NB_OK} / ${NB_TESTS} tests réussis"
 

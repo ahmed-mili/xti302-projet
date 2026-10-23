@@ -496,43 +496,73 @@ test_S2_root_interdit() {
 
 # test_S3_allowgroups : seul le groupe acces_ssh a le droit de se connecter.
 test_S3_allowgroups() {
-    local valeur
-    valeur="$(valeur_sshd allowgroups)"
-
-    if [ "$valeur" = "acces_ssh" ]; then
+    # La ligne entière doit être exactement "allowgroups acces_ssh" : un
+    # second groupe sur la ligne ferait échouer le test (grep -x = ligne entière).
+    if sshd -T 2>/dev/null | grep -qx 'allowgroups acces_ssh'; then
         ok "S3" "SSH : réservé au groupe acces_ssh"
     else
-        ko "S3" "SSH : allowgroups=${valeur} (attendu acces_ssh)"
+        ko "S3" "SSH : allowgroups=$(valeur_sshd allowgroups) (attendu exactement acces_ssh)"
     fi
 }
 
-# test_S4_essais_et_inactivite : au plus 4 essais par connexion, et une session
-# inactive est coupée en 15 minutes (900 s) au plus. sshd envoie un message
-# toutes les "clientaliveinterval" secondes et coupe après "clientalivecountmax"
-# messages sans réponse : le délai de coupure est le produit des deux.
+# secondes_du_delai <valeur> : convertit "session=10m" ou "session=600" en
+# secondes (sshd -T affiche la durée telle qu'elle est écrite dans la config).
+# Affiche rien si la forme n'est pas reconnue (le test sera alors KO).
+secondes_du_delai() {
+    local duree="${1#session=}"
+
+    case "$duree" in
+        *m) duree="${duree%m}"; [[ "$duree" =~ ^[0-9]+$ ]] && echo $((duree * 60)) ;;
+        *s) duree="${duree%s}"; [[ "$duree" =~ ^[0-9]+$ ]] && echo "$duree" ;;
+        *)  [[ "$duree" =~ ^[0-9]+$ ]] && echo "$duree" ;;
+    esac
+}
+
+# test_S4_essais_et_inactivite : au plus 4 essais par connexion, et deux
+# réglages d'inactivité qui coupent en 900 s (15 minutes) au plus :
+#   - ChannelTimeout coupe une session sans trafic (vraie inactivité) ;
+#   - ClientAlive détecte une connexion morte : sshd envoie un message toutes
+#     les "clientaliveinterval" s et coupe quand clientalivecountmax messages
+#     de plus sont restés sans réponse, soit intervalle x (nombre + 1).
 test_S4_essais_et_inactivite() {
     local essais
     local intervalle
     local nombre
-    local delai
+    local delai_session
+    local delai_mort
+    local delai_inactif
 
     essais="$(valeur_sshd maxauthtries)"
     intervalle="$(valeur_sshd clientaliveinterval)"
     nombre="$(valeur_sshd clientalivecountmax)"
+    delai_session="$(valeur_sshd channeltimeout)"
+    delai_inactif="$(secondes_du_delai "$delai_session")"
 
-    # Une valeur vide ou non numérique ferait échouer les comparaisons : ko.
-    case "${essais}${intervalle}${nombre}" in
-        ""|*[!0-9]*)
-            ko "S4" "SSH : valeurs illisibles (maxauthtries=${essais} clientaliveinterval=${intervalle} clientalivecountmax=${nombre})"
-            return
-            ;;
-    esac
+    # Chaque valeur doit être un nombre entier : [[ =~ ]] compare à une
+    # expression régulière (^[0-9]+$ = que des chiffres, au moins un).
+    # Une valeur vide ou illisible donne un KO au lieu d'une erreur de calcul.
+    if ! [[ "$essais" =~ ^[0-9]+$ ]]; then
+        ko "S4" "SSH : maxauthtries illisible (${essais})"
+        return
+    fi
+    if ! [[ "$intervalle" =~ ^[0-9]+$ ]]; then
+        ko "S4" "SSH : clientaliveinterval illisible (${intervalle})"
+        return
+    fi
+    if ! [[ "$nombre" =~ ^[0-9]+$ ]]; then
+        ko "S4" "SSH : clientalivecountmax illisible (${nombre})"
+        return
+    fi
+    if ! [[ "$delai_inactif" =~ ^[0-9]+$ ]]; then
+        ko "S4" "SSH : channeltimeout absent ou illisible (${delai_session})"
+        return
+    fi
 
-    delai=$((intervalle * nombre))
-    if [ "$essais" -le 4 ] && [ "$intervalle" -gt 0 ] && [ "$delai" -le 900 ]; then
-        ok "S4" "SSH : ${essais} essais au plus, session inactive coupée après ${delai} s"
+    delai_mort=$((intervalle * (nombre + 1)))
+    if [ "$essais" -le 4 ] && [ "$intervalle" -gt 0 ] && [ "$delai_mort" -le 900 ] && [ "$delai_inactif" -gt 0 ] && [ "$delai_inactif" -le 900 ]; then
+        ok "S4" "SSH : ${essais} essais au plus, session inactive coupée après ${delai_inactif} s, connexion morte après ${delai_mort} s"
     else
-        ko "S4" "SSH : maxauthtries=${essais} (max 4), coupure après ${delai} s (max 900, intervalle > 0)"
+        ko "S4" "SSH : maxauthtries=${essais} (max 4), connexion morte après ${delai_mort} s et session inactive après ${delai_inactif} s (max 900, intervalle > 0)"
     fi
 }
 

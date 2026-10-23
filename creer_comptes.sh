@@ -94,16 +94,20 @@ ajouter_groupes_secondaires() {
     done
 }
 
-# installer_cle <login> <groupe principal> : copie cles/<login>.pub dans
-# ~login/.ssh/authorized_keys avec les droits que SSH exige (700 et 600).
+# installer_cle <login> : copie cles/<login>.pub dans ~login/.ssh/authorized_keys
+# avec les droits que SSH exige (700 et 600).
 # Sécurité : ce script tourne en root et écrit dans le home d'un utilisateur.
 # Si ~/.ssh ou authorized_keys était un lien symbolique placé par cet
-# utilisateur, root écrirait ailleurs (par exemple dans /etc). On refuse donc.
-# install crée le dossier et le fichier d'un coup avec le bon propriétaire et
-# le bon mode : il n'y a pas de moment où ils seraient mal protégés.
+# utilisateur, root écrirait ailleurs (par exemple dans /etc). On refuse donc
+# les liens symboliques. Mais l'utilisateur pourrait en placer un entre le test
+# et l'écriture : on écrit donc AVEC SES DROITS (runuser -u), pas ceux de root.
+# Un lien vers un endroit interdit à l'utilisateur échouerait alors tout seul.
+# install crée le dossier et le fichier d'un coup avec le bon mode : il n'y a
+# pas de moment où ils seraient mal protégés. Le propriétaire et le groupe sont
+# ceux de l'utilisateur, puisque c'est lui qui crée les fichiers.
+# Le fichier de la clé est donné à install sur son entrée standard (/dev/stdin).
 installer_cle() {
     local login="$1"
-    local principal="$2"
     local fichier_cle="${DOSSIER_CLES}/${login}.pub"
     local home
     local dossier_ssh
@@ -122,8 +126,8 @@ installer_cle() {
         exit 1
     fi
 
-    install -d -o "$login" -g "$principal" -m 0700 "$dossier_ssh"
-    install -o "$login" -g "$principal" -m 0600 "$fichier_cle" "$fichier_cles_autorisees"
+    runuser -u "$login" -- install -d -m 0700 "$dossier_ssh"
+    runuser -u "$login" -- install -m 0600 /dev/stdin "$fichier_cles_autorisees" < "$fichier_cle"
     echo "clé publique installée : ${login}"
 }
 
@@ -139,7 +143,7 @@ traiter_ligne() {
     creer_groupe "$principal"
     creer_compte "$login" "$nom" "$principal"
     ajouter_groupes_secondaires "$login" "$secondaires"
-    installer_cle "$login" "$principal"
+    installer_cle "$login"
 
     # Les freelance ont un compte à durée limitée.
     if [ "$principal" = "freelance" ]; then

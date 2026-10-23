@@ -136,32 +136,56 @@ securiser_homes() {
 }
 
 # installer_ssh : installe la configuration SSH durcie (config/ssh/sshd_config.d).
-# Risque : une mauvaise config peut nous enfermer dehors. Trois précautions :
+# Risque : une mauvaise config peut nous enfermer dehors. Précautions :
 #   - cette étape passe APRÈS les comptes : le groupe acces_ssh existe et
 #     contient les admins quand AllowGroups entre en vigueur ;
-#   - on vérifie que ahmed est bien dans acces_ssh avant de copier ;
-#   - sshd -t valide la config, et ssh n'est redémarré que si elle est bonne.
+#   - on vérifie que ahmed est dans acces_ssh ET qu'il a une clé autorisée
+#     (sans clé, PasswordAuthentication no le laisserait dehors) ;
+#   - sshd -t valide la config, et ssh n'est redémarré que si elle est bonne ;
+#   - si la config est mauvaise, on remet l'ancienne (voir plus bas).
 # Les sessions déjà ouvertes survivent au redémarrage de ssh.
 installer_ssh() {
     echo "==> SSH"
     local source="${DOSSIER_DEPOT}/config/ssh/sshd_config.d/10-pixelia.conf"
     local cible="/etc/ssh/sshd_config.d/10-pixelia.conf"
+    local sauvegarde="/etc/ssh/sshd_config.d/10-pixelia.conf.ancien"
+    local cles_ahmed
+    cles_ahmed="$(getent passwd ahmed | cut -d: -f6)/.ssh/authorized_keys"
 
-    if ! id -nG ahmed | tr ' ' '\n' | grep -qx acces_ssh; then
+    if ! id -nG ahmed | tr ' ' '
+' | grep -qx acces_ssh; then
         erreur "ahmed n'est pas dans acces_ssh : AllowGroups nous enfermerait dehors"
         exit 1
     fi
 
-    install -o root -g root -m 0644 "$source" "$cible"
-
-    # Si la config est invalide, on retire notre fichier : sshd retrouve sa
-    # config d'avant et le service en cours n'est pas touché.
-    if ! sshd -t; then
-        rm -f "$cible"
-        erreur "configuration SSH invalide, fichier retiré, ssh n'est pas redémarré"
+    # [ -s ] est vrai si le fichier existe et n'est pas vide.
+    if [ ! -s "$cles_ahmed" ]; then
+        erreur "${cles_ahmed} est absent ou vide : PasswordAuthentication no nous enfermerait dehors"
         exit 1
     fi
 
+    # On garde l'ancienne config (s'il y en a une) avant de la remplacer. Le
+    # nom ne finit pas par .conf : sshd ne le lit pas.
+    if [ -f "$cible" ]; then
+        cp -p "$cible" "$sauvegarde"
+    fi
+
+    install -o root -g root -m 0644 "$source" "$cible"
+
+    # Si la nouvelle config est invalide, on remet l'ancienne (déjà validée
+    # lors d'un passage précédent) ou, à défaut, on retire la nôtre : ainsi
+    # sshd garde au prochain redémarrage la config d'avant, pas une config cassée.
+    if ! sshd -t; then
+        if [ -f "$sauvegarde" ]; then
+            mv "$sauvegarde" "$cible"
+        else
+            rm -f "$cible"
+        fi
+        erreur "configuration SSH invalide, ancienne configuration remise, ssh n'est pas redémarré"
+        exit 1
+    fi
+
+    rm -f "$sauvegarde"
     systemctl restart ssh
     echo "SSH durci et redémarré."
 }

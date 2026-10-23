@@ -579,6 +579,136 @@ test_S5_config_dans_drop_in() {
 }
 
 # ---------------------------------------------------------------------------
+# J1 : fail2ban
+# ---------------------------------------------------------------------------
+
+# test_J1_fail2ban_actif : fail2ban tourne et sa prison sshd existe.
+test_J1_fail2ban_actif() {
+    if fail2ban-client status sshd >/dev/null 2>&1; then
+        ok "J1" "fail2ban est actif et surveille la prison sshd"
+    else
+        ko "J1" "fail2ban-client status sshd échoue (fail2ban arrêté ou prison absente)"
+    fi
+}
+
+# test_J1_valeurs_jail : valeurs lues auprès de fail2ban lui-même (pas dans le
+# fichier) : 5 essais en 600 s (10 min) bannissent pendant 600 s (10 min).
+test_J1_valeurs_jail() {
+    local essais
+    local duree_ban
+    local fenetre
+
+    essais="$(fail2ban-client get sshd maxretry 2>/dev/null)"
+    duree_ban="$(fail2ban-client get sshd bantime 2>/dev/null)"
+    fenetre="$(fail2ban-client get sshd findtime 2>/dev/null)"
+
+    if [ "$essais" = "5" ] && [ "$duree_ban" = "600" ] && [ "$fenetre" = "600" ]; then
+        ok "J1" "fail2ban : 5 essais en 600 s, ban de 600 s"
+    else
+        ko "J1" "fail2ban : maxretry=${essais} (attendu 5), bantime=${duree_ban} (600), findtime=${fenetre} (600)"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# J2 : pare-feu nftables
+# ---------------------------------------------------------------------------
+
+# test_J2_politique_drop : la chaîne d'entrée refuse tout ce qu'elle n'autorise pas.
+test_J2_politique_drop() {
+    if nft list chain inet filtre entree 2>/dev/null | grep -q 'policy drop'; then
+        ok "J2" "pare-feu : chaîne entree en policy drop"
+    else
+        ko "J2" "pare-feu : la chaîne inet filtre entree n'existe pas ou n'est pas en policy drop"
+    fi
+}
+
+# test_J2_ssh_et_etablies : SSH (port 22) est autorisé, ainsi que les
+# réponses aux connexions déjà établies.
+test_J2_ssh_et_etablies() {
+    local regles
+    regles="$(nft list chain inet filtre entree 2>/dev/null)"
+
+    if echo "$regles" | grep -q 'tcp dport 22 accept' && echo "$regles" | grep -q 'ct state established,related accept'; then
+        ok "J2" "pare-feu : SSH et connexions établies autorisés"
+    else
+        ko "J2" "pare-feu : règle tcp dport 22 accept ou ct state established,related accept absente"
+    fi
+}
+
+# test_J2_au_demarrage : le pare-feu est rechargé à chaque démarrage.
+test_J2_au_demarrage() {
+    local etat
+    etat="$(systemctl is-enabled nftables 2>/dev/null)"
+
+    if [ "$etat" = "enabled" ]; then
+        ok "J2" "pare-feu : nftables activé au démarrage"
+    else
+        ko "J2" "pare-feu : nftables n'est pas activé au démarrage (état : ${etat})"
+    fi
+}
+
+# test_J2_regles_fail2ban_apres_rechargement : recharger nftables ne doit pas
+# effacer les règles de fail2ban. Verifier ne recharge rien : il contrôle les
+# deux conditions. La table f2b-table de fail2ban existe, et nftables.conf ne
+# contient pas "flush ruleset" (qui effacerait toutes les tables au rechargement).
+# Les lignes de commentaire (#) sont ignorées : le fichier explique pourquoi
+# il n'a pas cette instruction.
+test_J2_regles_fail2ban_apres_rechargement() {
+    local fichier="/etc/nftables.conf"
+
+    if ! nft list tables 2>/dev/null | grep -q 'f2b-table'; then
+        ko "J2" "pare-feu : la table f2b-table de fail2ban est absente"
+    elif [ ! -f "$fichier" ]; then
+        ko "J2" "pare-feu : ${fichier} absent"
+    elif grep -v '^[[:space:]]*#' "$fichier" | grep -q 'flush ruleset'; then
+        ko "J2" "pare-feu : ${fichier} contient flush ruleset (un rechargement effacerait les règles de fail2ban)"
+    else
+        ok "J2" "pare-feu : f2b-table présente et nftables.conf sans flush ruleset"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# J3 : journal persistant
+# ---------------------------------------------------------------------------
+
+# test_J3_journal_persistant : la configuration finale de journald (tous les
+# fichiers fusionnés) donne Storage=persistent, et /var/log/journal existe.
+# On garde la dernière ligne Storage= : c'est celle qui gagne.
+test_J3_journal_persistant() {
+    local stockage
+
+    stockage="$(systemd-analyze cat-config systemd/journald.conf 2>/dev/null | grep '^Storage=' | tail -n 1)"
+
+    if [ "$stockage" != "Storage=persistent" ]; then
+        ko "J3" "journal : réglage final ${stockage:-absent} (attendu Storage=persistent)"
+    elif [ ! -d /var/log/journal ]; then
+        ko "J3" "journal : /var/log/journal n'existe pas"
+    else
+        ok "J3" "journal : Storage=persistent et /var/log/journal présent"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# D1 : mises à jour automatiques
+# ---------------------------------------------------------------------------
+
+# test_D1_mises_a_jour_auto : apt est réglé pour appliquer les mises à jour de
+# sécurité chaque jour, et le service unattended-upgrades est actif.
+test_D1_mises_a_jour_auto() {
+    local etat
+
+    etat="$(systemctl is-active unattended-upgrades 2>/dev/null)"
+
+    if ! apt-config dump 2>/dev/null | grep -q 'APT::Periodic::Unattended-Upgrade "1"'; then
+        ko "D1" "mises à jour : APT::Periodic::Unattended-Upgrade n'est pas à \"1\""
+    elif [ "$etat" != "active" ]; then
+        ko "D1" "mises à jour : service unattended-upgrades ${etat}"
+    else
+        ok "D1" "mises à jour automatiques activées (unattended-upgrades actif)"
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # Programme principal
 # ---------------------------------------------------------------------------
 
@@ -604,6 +734,14 @@ main() {
     test_S3_allowgroups
     test_S4_essais_et_inactivite
     test_S5_config_dans_drop_in
+    test_J1_fail2ban_actif
+    test_J1_valeurs_jail
+    test_J2_politique_drop
+    test_J2_ssh_et_etablies
+    test_J2_au_demarrage
+    test_J2_regles_fail2ban_apres_rechargement
+    test_J3_journal_persistant
+    test_D1_mises_a_jour_auto
 
     echo "--- ${NB_OK} / ${NB_TESTS} tests réussis"
 

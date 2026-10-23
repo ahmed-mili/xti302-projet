@@ -1,0 +1,6 @@
+# Mises à jour automatiques de sécurité (exigence D1).
+# Met à jour la liste des paquets chaque jour.
+APT::Periodic::Update-Package-Lists "1";
+# Installe chaque jour les mises à jour permises par unattended-upgrades
+# (par défaut sur Debian : les mises à jour de sécurité).
+APT::Periodic::Unattended-Upgrade "1";

@@ -43,13 +43,17 @@ verifier_root() {
 # Étapes de l'installation
 # ---------------------------------------------------------------------------
 
-# installer_paquets : installe les paquets Debian nécessaires (acl pour les
-# droits sur /srv, sudo pour l'accès admin). Relancer ne réinstalle rien.
+# installer_paquets : installe les paquets Debian nécessaires :
+#   acl = droits sur /srv ; sudo = accès admin ;
+#   fail2ban + python3-systemd = bannir les adresses qui échouent en SSH (il lit
+#   le journal systemd) ; nftables = pare-feu ;
+#   unattended-upgrades = mises à jour de sécurité automatiques.
+# Relancer ne réinstalle rien.
 installer_paquets() {
     echo "==> Paquets"
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -qq
-    apt-get install -y -qq acl sudo
+    apt-get install -y -qq acl sudo fail2ban python3-systemd nftables unattended-upgrades
 }
 
 # installer_comptes : crée les groupes, les comptes, les clés et /srv.
@@ -190,6 +194,74 @@ installer_ssh() {
     echo "SSH durci et redémarré."
 }
 
+# installer_pare_feu : installe le pare-feu nftables (config/nftables.conf).
+# Risque : un pare-feu faux peut couper SSH. Précautions :
+#   - nft -c -f vérifie la syntaxe SANS rien appliquer ; si le fichier est
+#     mauvais, on s'arrête avant de copier quoi que ce soit ;
+#   - SSH (port 22) et les connexions déjà établies sont autorisés par le
+#     fichier lui-même, donc la session en cours survit au chargement.
+# Le fichier ne contient pas "flush ruleset" : recharger ne touche pas la table
+# f2b-table de fail2ban. Ne JAMAIS faire "systemctl restart nftables" à la main :
+# l'arrêt du service exécute "nft flush ruleset" et effacerait cette table.
+installer_pare_feu() {
+    echo "==> Pare-feu"
+    local source="${DOSSIER_DEPOT}/config/nftables.conf"
+
+    if ! nft -c -f "$source"; then
+        erreur "nftables.conf invalide : le pare-feu n'est pas modifié"
+        exit 1
+    fi
+
+    install -o root -g root -m 0644 "$source" /etc/nftables.conf
+
+    # enable = démarrage automatique au boot ; --now = démarre tout de suite si
+    # le service est arrêté. Le reload applique ensuite le fichier même si le
+    # service tournait déjà (relance du script).
+    systemctl enable --now nftables
+    systemctl reload nftables
+    echo "Pare-feu nftables actif."
+}
+
+# installer_fail2ban : installe la prison sshd (config/fail2ban/jail.d).
+# fail2ban est redémarré APRÈS nftables : si nftables a effacé des tables,
+# fail2ban recrée ainsi la sienne et reprend ses bans.
+installer_fail2ban() {
+    echo "==> fail2ban"
+    install -o root -g root -m 0644 "${DOSSIER_DEPOT}/config/fail2ban/jail.d/sshd-pixelia.conf" /etc/fail2ban/jail.d/sshd-pixelia.conf
+
+    # fail2ban-client -t teste la configuration sans rien démarrer.
+    if ! fail2ban-client -t >/dev/null; then
+        erreur "configuration fail2ban invalide"
+        exit 1
+    fi
+
+    systemctl enable fail2ban
+    systemctl restart fail2ban
+    echo "fail2ban actif."
+}
+
+# installer_journal : le journal systemd survit aux redémarrages
+# (config/journald.conf.d/10-persistent.conf, Storage=persistent).
+installer_journal() {
+    echo "==> Journal persistant"
+    install -d -o root -g root -m 0755 /etc/systemd/journald.conf.d
+    install -o root -g root -m 0644 "${DOSSIER_DEPOT}/config/journald.conf.d/10-persistent.conf" /etc/systemd/journald.conf.d/10-persistent.conf
+
+    # Le redémarrage de journald lui fait relire sa configuration ; --flush
+    # recopie ensuite le journal de /run (volatil) vers /var/log/journal.
+    systemctl restart systemd-journald
+    journalctl --flush
+    echo "Journal persistant."
+}
+
+# installer_mises_a_jour : mises à jour de sécurité automatiques (D1).
+installer_mises_a_jour() {
+    echo "==> Mises à jour automatiques"
+    install -o root -g root -m 0644 "${DOSSIER_DEPOT}/config/apt/20auto-upgrades" /etc/apt/apt.conf.d/20auto-upgrades
+    systemctl enable --now unattended-upgrades
+    echo "Mises à jour automatiques actives."
+}
+
 # ---------------------------------------------------------------------------
 # Programme principal
 # ---------------------------------------------------------------------------
@@ -204,6 +276,10 @@ main() {
     verrouiller_root
     securiser_homes
     installer_ssh
+    installer_pare_feu
+    installer_fail2ban
+    installer_journal
+    installer_mises_a_jour
     echo "Installation terminée."
 }
 

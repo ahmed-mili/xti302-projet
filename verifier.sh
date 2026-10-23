@@ -810,6 +810,28 @@ test_J4_journal_vide() {
     fi
 }
 
+# test_J4_pas_de_double_compte : une tentative = une ligne comptée. Une
+# tentative sur un compte inconnu écrit deux lignes ("Invalid user" puis
+# "Failed password for invalid user"), qui ne doivent compter que pour un.
+# Valeur attendue pour 198.51.100.23 : 3. Comptée à la main dans le journal
+# d'exemple : 3 lignes "Invalid user" (pi, git, deploy) venant de cette
+# adresse, une par processus sshd-session (pid 1184, 1191, 1198), soit
+# 3 tentatives. On lit le nombre dans la section "Échecs de connexion par
+# adresse IP" (colonne 1, l'adresse est en colonne 2).
+test_J4_pas_de_double_compte() {
+    local nombre
+
+    nombre="$(bash "$SCRIPT_ANALYSE" -f "$JOURNAL_EXEMPLE" 2>&1 \
+        | sed -n '/^=== Échecs de connexion/,/^=== Comptes visés/p' \
+        | awk '$2 == "198.51.100.23" { print $1 }')"
+
+    if [ "$nombre" = "3" ]; then
+        ok "J4" "analyse : 198.51.100.23 compté 3 fois pour 3 tentatives (pas de double compte)"
+    else
+        ko "J4" "analyse : 198.51.100.23 compté ${nombre:-0} fois (attendu 3 tentatives)"
+    fi
+}
+
 # test_J4_proprietaire_root : le script installé appartient à root:root et
 # seul root peut l'écrire (support le lance en root via sudo).
 test_J4_proprietaire_root() {
@@ -925,6 +947,7 @@ main() {
     test_J4_seuil_depasse
     test_J4_sous_le_seuil
     test_J4_journal_vide
+    test_J4_pas_de_double_compte
     test_J4_proprietaire_root
     test_J4_sshd_session
     test_J4_support_sans_f

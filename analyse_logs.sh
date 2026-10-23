@@ -149,24 +149,30 @@ afficher_section() {
 # Les trois parties du rapport sont d'abord calculées dans des fichiers
 # temporaires, puis affichées. Chaque calcul est une chaîne de commandes.
 
-# calculer_echecs : garde les lignes d'échec, extrait l'adresse IPv4 de chacune
-# (même expression régulière que le TP), puis compte et trie par nombre décroissant.
+# calculer_echecs : garde UNE ligne par tentative, extrait l'adresse IPv4 de
+# chacune (même expression régulière que le TP), puis compte et trie par nombre
+# décroissant. Une tentative sur un compte inconnu écrit "Invalid user" PUIS
+# "Failed password for invalid user" : on écarte la seconde, déjà comptée. On
+# ne se limite pas à "Failed password" : avec une config clé seule, une
+# tentative ne laisse que "Invalid user" (aucun Failed password), elle serait invisible.
 # "|| true" : grep rend 1 quand rien ne correspond, ce qui n'est pas une erreur ici.
 calculer_echecs() {
     grep -E 'Failed password for|Invalid user|not allowed because' "$JOURNAL" \
+        | grep -v 'Failed password for invalid user' \
         | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' \
         | sort | uniq -c | sort -rn > "$ECHECS_PAR_IP" || true
 }
 
 # calculer_comptes : extrait le nom du compte visé par chaque ligne d'échec.
 # sed -n ... p : n'affiche que les lignes où une substitution a réussi.
-# Trois formes de lignes :
-#   Failed password for [invalid user] COMPTE from ...
+# Trois formes de lignes (une par tentative, comme calculer_echecs : le
+# "Failed password for invalid user" est ignoré, "Invalid user" le remplace) :
+#   Failed password for COMPTE from ...
 #   Invalid user COMPTE from ...
 #   User COMPTE from ... not allowed because ...
 calculer_comptes() {
     sed -nE \
-        -e 's/.*Failed password for (invalid user )?([^ ]+) from .*/\2/p' \
+        -e 's/.*Failed password for ([^ ]+) from .*/\1/p' \
         -e 's/.*Invalid user ([^ ]+) from .*/\1/p' \
         -e 's/.*User ([^ ]+) from .* not allowed because.*/\1/p' \
         "$JOURNAL" \

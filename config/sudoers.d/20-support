@@ -1,0 +1,3 @@
+# Le compte support peut lancer un seul script, sans mot de passe : l'analyse
+# des journaux. Aucune autre commande n'est permise.
+support ALL=(root) NOPASSWD: /usr/local/sbin/analyse_logs.sh

@@ -1,0 +1,2 @@
+# Les membres du groupe admins ont tous les droits sudo.
+%admins ALL=(ALL:ALL) ALL

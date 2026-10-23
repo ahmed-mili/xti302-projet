@@ -1,0 +1,76 @@
+2026-10-12T03:12:04+0200 debian sshd-session[1128]: Invalid user admin from 203.0.113.45 port 41022
+2026-10-12T03:12:04+0200 debian sshd-session[1128]: pam_unix(sshd:auth): check pass; user unknown
+2026-10-12T03:12:04+0200 debian sshd-session[1128]: pam_unix(sshd:auth): authentication failure; logname= uid=0 euid=0 tty=ssh ruser= rhost=203.0.113.45 
+2026-10-12T03:12:06+0200 debian sshd-session[1128]: Failed password for invalid user admin from 203.0.113.45 port 41022 ssh2
+2026-10-12T03:12:07+0200 debian sshd-session[1128]: Connection closed by invalid user admin 203.0.113.45 port 41022 [preauth]
+2026-10-12T03:12:15+0200 debian sshd-session[1135]: Invalid user test from 203.0.113.45 port 41030
+2026-10-12T03:12:15+0200 debian sshd-session[1135]: pam_unix(sshd:auth): check pass; user unknown
+2026-10-12T03:12:15+0200 debian sshd-session[1135]: pam_unix(sshd:auth): authentication failure; logname= uid=0 euid=0 tty=ssh ruser= rhost=203.0.113.45 
+2026-10-12T03:12:17+0200 debian sshd-session[1135]: Failed password for invalid user test from 203.0.113.45 port 41030 ssh2
+2026-10-12T03:12:18+0200 debian sshd-session[1135]: Connection closed by invalid user test 203.0.113.45 port 41030 [preauth]
+2026-10-12T03:12:26+0200 debian sshd-session[1142]: Invalid user ubuntu from 203.0.113.45 port 41038
+2026-10-12T03:12:26+0200 debian sshd-session[1142]: pam_unix(sshd:auth): check pass; user unknown
+2026-10-12T03:12:26+0200 debian sshd-session[1142]: pam_unix(sshd:auth): authentication failure; logname= uid=0 euid=0 tty=ssh ruser= rhost=203.0.113.45 
+2026-10-12T03:12:28+0200 debian sshd-session[1142]: Failed password for invalid user ubuntu from 203.0.113.45 port 41038 ssh2
+2026-10-12T03:12:29+0200 debian sshd-session[1142]: Connection closed by invalid user ubuntu 203.0.113.45 port 41038 [preauth]
+2026-10-12T03:12:37+0200 debian sshd-session[1149]: Invalid user oracle from 203.0.113.45 port 41046
+2026-10-12T03:12:37+0200 debian sshd-session[1149]: pam_unix(sshd:auth): check pass; user unknown
+2026-10-12T03:12:37+0200 debian sshd-session[1149]: pam_unix(sshd:auth): authentication failure; logname= uid=0 euid=0 tty=ssh ruser= rhost=203.0.113.45 
+2026-10-12T03:12:39+0200 debian sshd-session[1149]: Failed password for invalid user oracle from 203.0.113.45 port 41046 ssh2
+2026-10-12T03:12:40+0200 debian sshd-session[1149]: Connection closed by invalid user oracle 203.0.113.45 port 41046 [preauth]
+2026-10-12T03:12:48+0200 debian sshd-session[1156]: Invalid user postgres from 203.0.113.45 port 41054
+2026-10-12T03:12:48+0200 debian sshd-session[1156]: pam_unix(sshd:auth): check pass; user unknown
+2026-10-12T03:12:48+0200 debian sshd-session[1156]: pam_unix(sshd:auth): authentication failure; logname= uid=0 euid=0 tty=ssh ruser= rhost=203.0.113.45 
+2026-10-12T03:12:50+0200 debian sshd-session[1156]: Failed password for invalid user postgres from 203.0.113.45 port 41054 ssh2
+2026-10-12T03:12:51+0200 debian sshd-session[1156]: Connection closed by invalid user postgres 203.0.113.45 port 41054 [preauth]
+2026-10-12T03:12:59+0200 debian sshd-session[1163]: Invalid user admin from 203.0.113.45 port 41062
+2026-10-12T03:12:59+0200 debian sshd-session[1163]: pam_unix(sshd:auth): check pass; user unknown
+2026-10-12T03:12:59+0200 debian sshd-session[1163]: pam_unix(sshd:auth): authentication failure; logname= uid=0 euid=0 tty=ssh ruser= rhost=203.0.113.45 
+2026-10-12T03:13:01+0200 debian sshd-session[1163]: Failed password for invalid user admin from 203.0.113.45 port 41062 ssh2
+2026-10-12T03:13:02+0200 debian sshd-session[1163]: Connection closed by invalid user admin 203.0.113.45 port 41062 [preauth]
+2026-10-12T03:13:10+0200 debian sshd-session[1170]: pam_unix(sshd:auth): authentication failure; logname= uid=0 euid=0 tty=ssh ruser= rhost=203.0.113.45  user=root
+2026-10-12T03:13:11+0200 debian sshd-session[1170]: Failed password for root from 203.0.113.45 port 41070 ssh2
+2026-10-12T03:13:12+0200 debian sshd-session[1170]: pam_unix(sshd:auth): authentication failure; logname= uid=0 euid=0 tty=ssh ruser= rhost=203.0.113.45  user=root
+2026-10-12T03:13:13+0200 debian sshd-session[1170]: Failed password for root from 203.0.113.45 port 41070 ssh2
+2026-10-12T03:13:14+0200 debian sshd-session[1170]: pam_unix(sshd:auth): authentication failure; logname= uid=0 euid=0 tty=ssh ruser= rhost=203.0.113.45  user=root
+2026-10-12T03:13:15+0200 debian sshd-session[1170]: Failed password for root from 203.0.113.45 port 41070 ssh2
+2026-10-12T03:13:16+0200 debian sshd-session[1170]: error: maximum authentication attempts exceeded for root from 203.0.113.45 port 41070 ssh2 [preauth]
+2026-10-12T03:13:16+0200 debian sshd-session[1170]: Disconnecting authenticating user root 203.0.113.45 port 41070: Too many authentication failures [preauth]
+2026-10-12T03:13:25+0200 debian sshd-session[1177]: pam_unix(sshd:auth): authentication failure; logname= uid=0 euid=0 tty=ssh ruser= rhost=203.0.113.45  user=root
+2026-10-12T03:13:26+0200 debian sshd-session[1177]: Failed password for root from 203.0.113.45 port 41078 ssh2
+2026-10-12T03:13:28+0200 debian sshd-session[1177]: Connection closed by authenticating user root 203.0.113.45 port 41078 [preauth]
+2026-10-12T08:02:11+0200 debian sshd[601]: Server listening on 0.0.0.0 port 22.
+2026-10-12T08:02:11+0200 debian sshd[601]: Server listening on :: port 22.
+2026-10-12T09:14:03+0200 debian sshd-session[1100]: pam_unix(sshd:auth): authentication failure; logname= uid=0 euid=0 tty=ssh ruser= rhost=192.168.56.1  user=alice
+2026-10-12T09:14:05+0200 debian sshd-session[1100]: Failed password for alice from 192.168.56.1 port 50100 ssh2
+2026-10-12T09:14:09+0200 debian sshd-session[1100]: Accepted password for alice from 192.168.56.1 port 50100 ssh2
+2026-10-12T09:14:09+0200 debian sshd-session[1100]: pam_unix(sshd:session): session opened for user alice(uid=1001) by alice(uid=0)
+2026-10-12T09:31:40+0200 debian sshd-session[1100]: Received disconnect from 192.168.56.1 port 50100:11: disconnected by user
+2026-10-12T09:31:40+0200 debian sshd-session[1100]: Disconnected from user alice 192.168.56.1 port 50100
+2026-10-12T09:31:40+0200 debian sshd-session[1100]: pam_unix(sshd:session): session closed for user alice
+2026-10-12T09:45:12+0200 debian sshd-session[1107]: Accepted publickey for etu from 192.168.56.1 port 50121 ssh2: ED25519 SHA256:Xq3kT7mYpL2vNcR9sWfH4dBzJ8aUeQ1oGtK6iXyZp0E
+2026-10-12T09:45:12+0200 debian sshd-session[1107]: pam_unix(sshd:session): session opened for user etu(uid=1000) by etu(uid=0)
+2026-10-12T10:20:05+0200 debian sshd-session[1114]: User bob from 192.168.56.1 not allowed because none of user's groups are listed in AllowGroups
+2026-10-12T10:20:05+0200 debian sshd-session[1114]: Connection closed by authenticating user bob 192.168.56.1 port 50140 [preauth]
+2026-10-12T11:02:30+0200 debian sshd-session[1121]: Accepted publickey for alice from 192.168.56.10 port 60001 ssh2: ED25519 SHA256:Rb7NwQe3KxLm9ZpTfV2cYhJd5GsUa8oIiXt1WnE4yA0
+2026-10-12T11:02:30+0200 debian sshd-session[1121]: pam_unix(sshd:session): session opened for user alice(uid=1001) by alice(uid=0)
+2026-10-12T11:48:02+0200 debian sshd-session[1121]: Received disconnect from 192.168.56.10 port 60001:11: disconnected by user
+2026-10-12T11:48:02+0200 debian sshd-session[1121]: Disconnected from user alice 192.168.56.10 port 60001
+2026-10-12T11:48:02+0200 debian sshd-session[1121]: pam_unix(sshd:session): session closed for user alice
+2026-10-12T12:10:55+0200 debian sshd-session[1107]: Received disconnect from 192.168.56.1 port 50121:11: disconnected by user
+2026-10-12T12:10:55+0200 debian sshd-session[1107]: Disconnected from user etu 192.168.56.1 port 50121
+2026-10-12T12:10:55+0200 debian sshd-session[1107]: pam_unix(sshd:session): session closed for user etu
+2026-10-12T14:05:17+0200 debian sshd-session[1184]: Invalid user pi from 198.51.100.23 port 52310
+2026-10-12T14:05:18+0200 debian sshd-session[1184]: Failed password for invalid user pi from 198.51.100.23 port 52310 ssh2
+2026-10-12T14:05:19+0200 debian sshd-session[1184]: Connection closed by invalid user pi 198.51.100.23 port 52310 [preauth]
+2026-10-12T14:05:57+0200 debian sshd-session[1191]: Invalid user git from 198.51.100.23 port 52313
+2026-10-12T14:05:58+0200 debian sshd-session[1191]: Failed password for invalid user git from 198.51.100.23 port 52313 ssh2
+2026-10-12T14:05:59+0200 debian sshd-session[1191]: Connection closed by invalid user git 198.51.100.23 port 52313 [preauth]
+2026-10-12T14:06:37+0200 debian sshd-session[1198]: Invalid user deploy from 198.51.100.23 port 52316
+2026-10-12T14:06:38+0200 debian sshd-session[1198]: Failed password for invalid user deploy from 198.51.100.23 port 52316 ssh2
+2026-10-12T14:06:39+0200 debian sshd-session[1198]: Connection closed by invalid user deploy 198.51.100.23 port 52316 [preauth]
+2026-10-12T16:40:12+0200 debian sshd-session[1205]: Connection closed by authenticating user root 192.0.2.77 port 55555 [preauth]
+2026-10-12T16:40:42+0200 debian sshd-session[1212]: Connection closed by authenticating user root 192.0.2.77 port 55561 [preauth]
+2026-10-12T17:30:02+0200 debian sshd[601]: Received SIGHUP; restarting.
+2026-10-12T17:30:02+0200 debian sshd[601]: Server listening on 0.0.0.0 port 22.
+2026-10-12T17:30:02+0200 debian sshd[601]: Server listening on :: port 22.

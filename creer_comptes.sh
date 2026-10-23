@@ -87,8 +87,8 @@ ajouter_groupes_secondaires() {
     local secondaires="$2"
     local groupe
 
-    # On remplace les virgules par des espaces pour parcourir la liste.
-    for groupe in ${secondaires//,/ }; do
+    # tr remplace les virgules par des espaces pour parcourir la liste avec for.
+    for groupe in $(echo "$secondaires" | tr ',' ' '); do
         creer_groupe "$groupe"
         usermod -aG "$groupe" "$login"
     done
@@ -96,12 +96,18 @@ ajouter_groupes_secondaires() {
 
 # installer_cle <login> <groupe principal> : copie cles/<login>.pub dans
 # ~login/.ssh/authorized_keys avec les droits que SSH exige (700 et 600).
+# Sécurité : ce script tourne en root et écrit dans le home d'un utilisateur.
+# Si ~/.ssh ou authorized_keys était un lien symbolique placé par cet
+# utilisateur, root écrirait ailleurs (par exemple dans /etc). On refuse donc.
+# install crée le dossier et le fichier d'un coup avec le bon propriétaire et
+# le bon mode : il n'y a pas de moment où ils seraient mal protégés.
 installer_cle() {
     local login="$1"
     local principal="$2"
     local fichier_cle="${DOSSIER_CLES}/${login}.pub"
     local home
     local dossier_ssh
+    local fichier_cles_autorisees
 
     if [ ! -f "$fichier_cle" ]; then
         return 0
@@ -109,12 +115,15 @@ installer_cle() {
 
     home="$(getent passwd "$login" | cut -d: -f6)"
     dossier_ssh="${home}/.ssh"
+    fichier_cles_autorisees="${dossier_ssh}/authorized_keys"
 
-    mkdir -p "$dossier_ssh"
-    cp "$fichier_cle" "${dossier_ssh}/authorized_keys"
-    chown -R "${login}:${principal}" "$dossier_ssh"
-    chmod 700 "$dossier_ssh"
-    chmod 600 "${dossier_ssh}/authorized_keys"
+    if [ -L "$dossier_ssh" ] || [ -L "$fichier_cles_autorisees" ]; then
+        erreur "${dossier_ssh} ou authorized_keys est un lien symbolique : on refuse d'y écrire"
+        exit 1
+    fi
+
+    install -d -o "$login" -g "$principal" -m 0700 "$dossier_ssh"
+    install -o "$login" -g "$principal" -m 0600 "$fichier_cle" "$fichier_cles_autorisees"
     echo "clé publique installée : ${login}"
 }
 
@@ -138,23 +147,78 @@ traiter_ligne() {
     fi
 }
 
-# lire_csv <fichier> : lit le CSV ligne par ligne, saute l'en-tête et les
-# lignes vides. tr -d '\r' retire les retours chariot au cas où le fichier
-# aurait été enregistré avec des fins de ligne Windows.
+# nom_valide <texte> : renvoie 0 si le texte est un nom de login ou de groupe
+# acceptable : minuscules, chiffres, _ et -, en commençant par une lettre ou _.
+nom_valide() {
+    printf '%s\n' "$1" | grep -Eq '^[a-z_][a-z0-9_-]*$'
+}
+
+# groupe_interdit <groupe> : renvoie 0 pour les groupes qu'un CSV ne doit
+# jamais donner à un compte (root, sudo, adm).
+groupe_interdit() {
+    case "$1" in
+        root|sudo|adm) return 0 ;;
+    esac
+    return 1
+}
+
+# erreurs_ligne <login> <principal> <secondaires> : affiche une ligne par
+# problème trouvé dans une ligne du CSV (rien si la ligne est correcte).
+erreurs_ligne() {
+    local login="$1"
+    local principal="$2"
+    local secondaires="$3"
+    local groupe
+
+    if ! nom_valide "$login" || [ "$login" = "root" ]; then
+        echo "login invalide : '${login}'"
+    fi
+
+    for groupe in $principal $(echo "$secondaires" | tr ',' ' '); do
+        if ! nom_valide "$groupe"; then
+            echo "groupe invalide pour ${login} : '${groupe}'"
+        elif groupe_interdit "$groupe"; then
+            echo "groupe interdit pour ${login} : '${groupe}'"
+        fi
+    done
+
+    if [ -z "$principal" ]; then
+        echo "groupe principal manquant pour ${login}"
+    fi
+}
+
+# verifier_csv <fichier> : contrôle toutes les lignes AVANT de créer quoi que
+# ce soit, pour ne pas laisser le système à moitié configuré.
+# tail -n +2 saute l'en-tête ; tr -d '\r' retire les retours chariot (fichier
+# enregistré sous Windows) ; la boucle affiche les problèmes et $( ) les garde.
+verifier_csv() {
+    local fichier="$1"
+    local problemes
+
+    problemes="$(tail -n +2 "$fichier" | tr -d '\r' | while IFS=';' read -r login _nom principal secondaires || [ -n "$login" ]; do
+        if [ -n "$login" ]; then
+            erreurs_ligne "$login" "$principal" "$secondaires"
+        fi
+    done)"
+
+    if [ -n "$problemes" ]; then
+        erreur "${fichier} est invalide :"
+        echo "$problemes" >&2
+        exit 1
+    fi
+}
+
+# lire_csv <fichier> : crée les comptes ligne par ligne, en sautant l'en-tête
+# et les lignes vides. La boucle est placée après un | : si une commande
+# échoue dedans, "set -e" avec "pipefail" arrête quand même tout le script.
 lire_csv() {
     local fichier="$1"
-    local login nom principal secondaires
 
-    while IFS=';' read -r login nom principal secondaires || [ -n "$login" ]; do
-        if [ -z "$login" ]; then
-            continue
+    tail -n +2 "$fichier" | tr -d '\r' | while IFS=';' read -r login nom principal secondaires || [ -n "$login" ]; do
+        if [ -n "$login" ]; then
+            traiter_ligne "$login" "$nom" "$principal" "$secondaires"
         fi
-        if [ -z "$principal" ]; then
-            erreur "ligne incomplète dans ${fichier} (login ${login})"
-            exit 1
-        fi
-        traiter_ligne "$login" "$nom" "$principal" "$secondaires"
-    done < <(tail -n +2 "$fichier" | tr -d '\r')
+    done
 }
 
 # ---------------------------------------------------------------------------
@@ -192,8 +256,10 @@ creer_dossiers_srv() {
     preparer_repertoire /srv/clients
 
     # /srv/projets : dev rw, design r, freelance traverse seulement.
+    # Pas de freelance dans les ACL par défaut : traverser n'a aucun sens pour
+    # de futurs fichiers.
     setfacl -m g:dev:rwx,g:design:r-x,g:freelance:--x /srv/projets
-    setfacl -d -m g:dev:rwx,g:design:r-x,g:freelance:--x,o::--- /srv/projets
+    setfacl -d -m g:dev:rwx,g:design:r-x,o::--- /srv/projets
 
     # /srv/projets/externe : dev rw, design r, freelance rw.
     setfacl -m g:dev:rwx,g:design:r-x,g:freelance:rwx /srv/projets/externe
@@ -222,6 +288,7 @@ main() {
         exit 1
     fi
 
+    verifier_csv "$fichier_csv"
     lire_csv "$fichier_csv"
     creer_dossiers_srv
 }

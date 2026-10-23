@@ -42,6 +42,7 @@ ko() {
 
 # peut_lire <login> <chemin> : renvoie 0 si l'utilisateur peut lire le chemin.
 # Pour un répertoire, lire ne suffit pas : il faut aussi pouvoir le traverser (x).
+# shellcheck disable=SC2317  # pas encore appelée : réservée aux tests des tâches suivantes
 peut_lire() {
     local login="$1"
     local chemin="$2"
@@ -78,53 +79,77 @@ FICHIER_COMPTES="${DOSSIER_DEPOT}/comptes.csv"
 # logins_du_groupe <groupe> : affiche les logins de comptes.csv dont le groupe
 # principal est <groupe> (colonne 3), un par ligne. NR > 1 saute l'en-tête.
 logins_du_groupe() {
-    awk -F';' -v groupe="$1" 'NR > 1 && $3 == groupe { print $1 }' "$FICHIER_COMPTES"
+    awk -F';' -v groupe="$1" 'NR > 1 && $1 != "" && $3 == groupe { print $1 }' "$FICHIER_COMPTES"
 }
 
 # acces_reel <login> <répertoire> : affiche ce que l'utilisateur peut vraiment
-# faire dans le répertoire : "rw" (lire et écrire), "r" (lire seulement),
-# "x" (seulement le traverser) ou "-" (rien).
+# faire dans le répertoire. On teste les trois droits séparément :
+#   r = lister le contenu, x = traverser, w = créer un fichier.
+# Résultat : "rw" (r, x et w), "r" (r et x sans w), "x" (traverser seulement :
+# ni lister ni créer), "-" (aucun des trois). Toute autre combinaison est
+# affichée telle quelle (par exemple "bizarre:rx") et fera échouer le test.
 acces_reel() {
     local login="$1"
     local repertoire="$2"
+    local lettres=""
 
-    if peut_lire "$login" "$repertoire" && peut_ecrire "$login" "$repertoire"; then
-        echo "rw"
-    elif peut_lire "$login" "$repertoire"; then
-        echo "r"
-    elif sudo -u "$login" test -x "$repertoire" 2>/dev/null; then
-        echo "x"
-    else
-        echo "-"
+    if sudo -u "$login" test -r "$repertoire" 2>/dev/null; then
+        lettres="${lettres}r"
     fi
+    if sudo -u "$login" test -x "$repertoire" 2>/dev/null; then
+        lettres="${lettres}x"
+    fi
+    if peut_ecrire "$login" "$repertoire"; then
+        lettres="${lettres}w"
+    fi
+
+    case "$lettres" in
+        rxw) echo "rw" ;;
+        rx)  echo "r" ;;
+        x)   echo "x" ;;
+        "")  echo "-" ;;
+        *)   echo "bizarre:${lettres}" ;;
+    esac
 }
 
-# verifier_repertoire <ID> <répertoire> <dev> <design> <commercial> <freelance> :
-# compare l'accès réel de chaque membre de chaque groupe avec l'accès attendu
-# (rw, r, x ou -) et affiche un seul [OK] ou [KO] pour le répertoire.
-verifier_repertoire() {
-    local id="$1"
-    local repertoire="$2"
-    local attendus=("$3" "$4" "$5" "$6")
-    local groupes=(dev design commercial freelance)
-    local ecarts=""
-    local i
+# Liste des écarts trouvés par comparer_groupe (vidée par verifier_repertoire).
+ECARTS=""
+
+# comparer_groupe <répertoire> <groupe> <accès attendu> : compare l'accès réel
+# de chaque membre du groupe (d'après comptes.csv) avec l'accès attendu et note
+# les différences dans ECARTS.
+comparer_groupe() {
+    local repertoire="$1"
+    local groupe="$2"
+    local attendu="$3"
     local login
     local reel
 
-    for i in 0 1 2 3; do
-        for login in $(logins_du_groupe "${groupes[$i]}"); do
-            reel="$(acces_reel "$login" "$repertoire")"
-            if [ "$reel" != "${attendus[$i]}" ]; then
-                ecarts="${ecarts} ${login}(attendu ${attendus[$i]}, obtenu ${reel})"
-            fi
-        done
+    for login in $(logins_du_groupe "$groupe"); do
+        reel="$(acces_reel "$login" "$repertoire")"
+        if [ "$reel" != "$attendu" ]; then
+            ECARTS="${ECARTS} ${login}(attendu ${attendu}, obtenu ${reel})"
+        fi
     done
+}
 
-    if [ -z "$ecarts" ]; then
+# verifier_repertoire <ID> <répertoire> <dev> <design> <commercial> <freelance> :
+# compare l'accès réel de chaque groupe avec l'accès attendu (rw, r, x ou -)
+# et affiche un seul [OK] ou [KO] pour le répertoire.
+verifier_repertoire() {
+    local id="$1"
+    local repertoire="$2"
+
+    ECARTS=""
+    comparer_groupe "$repertoire" dev "$3"
+    comparer_groupe "$repertoire" design "$4"
+    comparer_groupe "$repertoire" commercial "$5"
+    comparer_groupe "$repertoire" freelance "$6"
+
+    if [ -z "$ECARTS" ]; then
         ok "$id" "${repertoire} : droits conformes au tableau"
     else
-        ko "$id" "${repertoire} :${ecarts}"
+        ko "$id" "${repertoire} :${ECARTS}"
     fi
 }
 
@@ -132,33 +157,50 @@ verifier_repertoire() {
 # C1 : comptes et groupes
 # ---------------------------------------------------------------------------
 
+# problemes_du_compte <login> <groupe principal> <groupes secondaires> :
+# affiche une ligne par problème trouvé (compte absent, mauvais groupe).
+# Les groupes secondaires sont séparés par des virgules ; tr les remplace
+# par des espaces pour pouvoir les parcourir avec for.
+problemes_du_compte() {
+    local login="$1"
+    local principal="$2"
+    local secondaires="$3"
+    local groupe
+
+    if ! id "$login" >/dev/null 2>&1; then
+        echo "${login}(compte absent)"
+        return
+    fi
+    if [ "$(id -gn "$login")" != "$principal" ]; then
+        echo "${login}(groupe principal différent de ${principal})"
+    fi
+    for groupe in $(echo "$secondaires" | tr ',' ' '); do
+        if ! id -nG "$login" | tr ' ' '\n' | grep -qx "$groupe"; then
+            echo "${login}(pas dans ${groupe})"
+        fi
+    done
+}
+
 # test_C1_comptes_du_csv : chaque login de comptes.csv existe et appartient à
 # son groupe principal et à ses groupes secondaires.
 test_C1_comptes_du_csv() {
-    local manquants=""
+    local manquants
     local login _nom principal secondaires
-    local groupe
 
     if [ ! -f "$FICHIER_COMPTES" ]; then
         ko "C1" "comptes.csv introuvable"
         return
     fi
 
-    # tail -n +2 saute la ligne d'en-tête ; tr retire d'éventuels retours chariot.
-    while IFS=';' read -r login _nom principal secondaires || [ -n "$login" ]; do
-        if ! id "$login" >/dev/null 2>&1; then
-            manquants="${manquants} ${login}(compte absent)"
-            continue
+    # tail -n +2 saute l'en-tête, tr retire d'éventuels retours chariot, la
+    # boucle affiche une ligne par problème et $( ) récupère tout ce texte
+    # dans la variable (une boucle placée après un | ne peut pas modifier les
+    # variables du script, d'où cette façon de faire).
+    manquants="$(tail -n +2 "$FICHIER_COMPTES" | tr -d '\r' | while IFS=';' read -r login _nom principal secondaires || [ -n "$login" ]; do
+        if [ -n "$login" ]; then
+            problemes_du_compte "$login" "$principal" "$secondaires"
         fi
-        if [ "$(id -gn "$login")" != "$principal" ]; then
-            manquants="${manquants} ${login}(groupe principal différent de ${principal})"
-        fi
-        for groupe in ${secondaires//,/ }; do
-            if ! id -nG "$login" | tr ' ' '\n' | grep -qx "$groupe"; then
-                manquants="${manquants} ${login}(pas dans ${groupe})"
-            fi
-        done
-    done < <(tail -n +2 "$FICHIER_COMPTES" | tr -d '\r')
+    done | tr '\n' ' ')"
 
     if [ -z "$manquants" ]; then
         ok "C1" "tous les comptes de comptes.csv existent avec leurs groupes"
@@ -215,22 +257,45 @@ test_C2_externe()   { verifier_repertoire "C2" /srv/projets/externe rw r  -  rw;
 test_C2_maquettes() { verifier_repertoire "C2" /srv/maquettes       r  rw r  -; }
 test_C2_clients()   { verifier_repertoire "C2" /srv/clients         -  -  rw -; }
 
-# test_C2_acl_par_defaut : chaque répertoire a des ACL par défaut pour des
-# groupes nommés, afin que les nouveaux fichiers gardent les bons droits.
+# acl_defaut_conforme <répertoire> <entrées attendues...> : vrai si les ACL par
+# défaut des groupes nommés du répertoire sont exactement celles de la liste
+# (par exemple "default:group:dev:rwx"). On trie les deux listes pour que
+# l'ordre n'ait pas d'importance.
+acl_defaut_conforme() {
+    local repertoire="$1"
+    local attendu
+    local reel
+
+    shift
+    attendu="$(printf '%s\n' "$@" | sort)"
+    reel="$(getfacl -p "$repertoire" 2>/dev/null | grep '^default:group:[a-z]' | sort)"
+    [ "$attendu" = "$reel" ]
+}
+
+# test_C2_acl_par_defaut : chaque répertoire a exactement les ACL par défaut
+# prévues, afin que les nouveaux fichiers gardent les bons droits. Les ACL par
+# défaut reprennent les droits d'accès, sauf freelance sur /srv/projets : il
+# n'a qu'un droit de traverser, qui n'a aucun sens pour de futurs fichiers.
 test_C2_acl_par_defaut() {
-    local sans_acl=""
-    local repertoire
+    local fausses=""
 
-    for repertoire in /srv/projets /srv/projets/externe /srv/maquettes /srv/clients; do
-        if ! getfacl -p "$repertoire" 2>/dev/null | grep -q "^default:group:[a-z]"; then
-            sans_acl="${sans_acl} ${repertoire}"
-        fi
-    done
+    if ! acl_defaut_conforme /srv/projets "default:group:dev:rwx" "default:group:design:r-x"; then
+        fausses="${fausses} /srv/projets"
+    fi
+    if ! acl_defaut_conforme /srv/projets/externe "default:group:dev:rwx" "default:group:design:r-x" "default:group:freelance:rwx"; then
+        fausses="${fausses} /srv/projets/externe"
+    fi
+    if ! acl_defaut_conforme /srv/maquettes "default:group:dev:r-x" "default:group:design:rwx" "default:group:commercial:r-x"; then
+        fausses="${fausses} /srv/maquettes"
+    fi
+    if ! acl_defaut_conforme /srv/clients "default:group:commercial:rwx"; then
+        fausses="${fausses} /srv/clients"
+    fi
 
-    if [ -z "$sans_acl" ]; then
-        ok "C2" "ACL par défaut présentes sur les quatre répertoires"
+    if [ -z "$fausses" ]; then
+        ok "C2" "ACL par défaut conformes sur les quatre répertoires"
     else
-        ko "C2" "pas d'ACL par défaut sur :${sans_acl}"
+        ko "C2" "ACL par défaut différentes de celles prévues sur :${fausses}"
     fi
 }
 
@@ -276,41 +341,74 @@ test_C3_admins_sudo() {
     fi
 }
 
-# test_C3_support_restreint : le compte support ne peut lancer qu'une seule
-# commande, analyse_logs.sh.
+# test_C3_support_restreint : le compte support a une seule règle sudo, et
+# c'est exactement le lancement de analyse_logs.sh en root, sans mot de passe.
 test_C3_support_restreint() {
     local regles
     local nombre
 
     # Les règles sont les lignes qui commencent par des espaces puis "(".
-    regles="$(LC_ALL=C sudo -l -U support 2>/dev/null | grep -E '^ +\(')"
+    # sed retire les espaces du début pour comparer la ligne entière.
+    regles="$(LC_ALL=C sudo -l -U support 2>/dev/null | grep -E '^ +\(' | sed 's/^ *//')"
     nombre="$(echo "$regles" | grep -c .)"
 
-    if [ "$nombre" -eq 1 ] && echo "$regles" | grep -qF "/usr/local/sbin/analyse_logs.sh"; then
+    if [ "$nombre" -eq 1 ] && [ "$regles" = "(root) NOPASSWD: /usr/local/sbin/analyse_logs.sh" ]; then
         ok "C3" "support ne peut lancer que analyse_logs.sh"
     else
         ko "C3" "règles sudo de support inattendues (${nombre}) : ${regles}"
     fi
 }
 
-# test_C3_aucun_autre_sudo : le groupe sudo de Debian est vide et deux
-# utilisateurs ordinaires n'ont aucun droit sudo.
+# test_C3_aucun_autre_sudo : personne d'autre que les admins (et la règle
+# limitée de support) n'a de droit sudo :
+#   - le groupe sudo de Debian est vide et n'est le groupe principal de personne ;
+#   - tous les autres comptes de comptes.csv sont refusés par sudo ;
+#   - /etc/sudoers.d ne contient que nos deux fichiers (et le README de Debian).
 test_C3_aucun_autre_sudo() {
+    local problemes=""
     local membres_sudo
-    local avec_droit=""
+    local gid_sudo
+    local principaux_sudo
+    local autres_fichiers=""
+    local logins_a_refuser
+    local fichier
+    local nom
     local login
 
     membres_sudo="$(getent group sudo | cut -d: -f4)"
-    for login in jdupont kdurand; do
+    if [ -n "$membres_sudo" ]; then
+        problemes="${problemes} membres du groupe sudo : ${membres_sudo} ;"
+    fi
+
+    gid_sudo="$(getent group sudo | cut -d: -f3)"
+    principaux_sudo="$(awk -F: -v gid="$gid_sudo" '$4 == gid { print $1 }' /etc/passwd | tr '\n' ' ')"
+    if [ -n "$principaux_sudo" ]; then
+        problemes="${problemes} groupe principal sudo : ${principaux_sudo} ;"
+    fi
+
+    # Colonne 3 = groupe principal. On saute les admins et support.
+    logins_a_refuser="$(awk -F';' 'NR > 1 && $1 != "" && $3 != "admins" && $3 != "support" { print $1 }' "$FICHIER_COMPTES")"
+    for login in $logins_a_refuser; do
         if ! LC_ALL=C sudo -l -U "$login" 2>&1 | grep -q "not allowed to run sudo"; then
-            avec_droit="${avec_droit} ${login}"
+            problemes="${problemes} ${login} a un droit sudo ;"
         fi
     done
 
-    if [ -z "$membres_sudo" ] && [ -z "$avec_droit" ]; then
-        ok "C3" "groupe sudo vide, jdupont et kdurand sans droit sudo"
+    for fichier in /etc/sudoers.d/*; do
+        nom="$(basename "$fichier")"
+        case "$nom" in
+            10-admins|20-support|README) ;;
+            *) autres_fichiers="${autres_fichiers} ${nom}" ;;
+        esac
+    done
+    if [ -n "$autres_fichiers" ]; then
+        problemes="${problemes} fichiers inattendus dans /etc/sudoers.d : ${autres_fichiers}"
+    fi
+
+    if [ -z "$problemes" ]; then
+        ok "C3" "aucun droit sudo en dehors de admins et de la règle de support"
     else
-        ko "C3" "membres du groupe sudo : '${membres_sudo}' ; avec droit sudo :${avec_droit}"
+        ko "C3" "${problemes}"
     fi
 }
 
@@ -330,24 +428,27 @@ test_C4_root_verrouille() {
     fi
 }
 
-# test_C4_homes_prives : aucun /home/* n'est ouvert aux autres utilisateurs
-# (dernier chiffre du mode égal à 0).
+# test_C4_homes_prives : aucun /home/* n'est ouvert au groupe ni aux autres :
+# le mode doit finir par 00 (700). cut -c2-3 garde les 2e et 3e chiffres du mode.
 test_C4_homes_prives() {
     local ouverts=""
     local home
     local mode
 
     for home in /home/*; do
+        if [ ! -d "$home" ]; then
+            continue
+        fi
         mode="$(stat -c '%a' "$home")"
-        if [ "${mode: -1}" != "0" ]; then
+        if [ "$(echo "$mode" | cut -c2-3)" != "00" ]; then
             ouverts="${ouverts} ${home}(${mode})"
         fi
     done
 
     if [ -z "$ouverts" ]; then
-        ok "C4" "tous les homes sont fermés aux autres utilisateurs"
+        ok "C4" "tous les homes sont fermés au groupe et aux autres (700)"
     else
-        ko "C4" "homes accessibles aux autres :${ouverts}"
+        ko "C4" "homes accessibles au groupe ou aux autres :${ouverts}"
     fi
 }
 

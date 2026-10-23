@@ -75,16 +75,25 @@ installer_sudoers() {
         install -o root -g root -m 0440 "$fichier" "/etc/sudoers.d/${nom}"
         echo "sudoers installé : ${nom}"
     done
+
+    # Contrôle final de l'ensemble de la configuration sudo (sudoers + sudoers.d).
+    if ! visudo -c >/dev/null; then
+        erreur "la configuration sudo est invalide après la copie"
+        exit 1
+    fi
 }
 
 # retirer_groupe_sudo : vide le groupe sudo de Debian, pour que seul le groupe
 # admins donne l'accès administrateur. Garde-fou : on ne retire personne tant
-# que ahmed (le compte d'installation) n'est pas dans admins et que 10-admins
-# n'est pas installé, sinon on se retrouverait sans sudo.
+# que ahmed (le compte d'installation) n'est pas dans admins, que 10-admins
+# n'est pas installé et que ahmed n'a pas de mot de passe utilisable (sudo le
+# demande), sinon on se retrouverait sans sudo.
 # id -nG liste tous les groupes de ahmed, principal compris.
+# passwd -S affiche l'état du mot de passe en 2e colonne : P = utilisable.
 retirer_groupe_sudo() {
     echo "==> Groupe sudo"
     local membres_sudo
+    local etat_mot_de_passe
     local login
 
     if ! id -nG ahmed | tr ' ' '\n' | grep -qx admins || [ ! -f /etc/sudoers.d/10-admins ]; then
@@ -92,8 +101,15 @@ retirer_groupe_sudo() {
         exit 1
     fi
 
+    etat_mot_de_passe="$(passwd -S ahmed | cut -d' ' -f2)"
+    if [ "$etat_mot_de_passe" != "P" ]; then
+        erreur "ahmed n'a pas de mot de passe utilisable (état ${etat_mot_de_passe}) : on garde le groupe sudo"
+        exit 1
+    fi
+
+    # Les membres sont séparés par des virgules : tr les remplace par des espaces.
     membres_sudo="$(getent group sudo | cut -d: -f4)"
-    for login in ${membres_sudo//,/ }; do
+    for login in $(echo "$membres_sudo" | tr ',' ' '); do
         gpasswd -d "$login" sudo
     done
 }
@@ -105,13 +121,17 @@ verrouiller_root() {
     passwd -l root
 }
 
-# securiser_homes : chaque home est fermé aux autres utilisateurs (0750).
+# securiser_homes : chaque home est fermé au groupe et aux autres (0700).
 securiser_homes() {
     echo "==> Homes"
     local home
 
     for home in /home/*; do
-        chmod 0750 "$home"
+        # Si /home est vide, le motif /home/* reste tel quel : on saute.
+        if [ ! -d "$home" ]; then
+            continue
+        fi
+        chmod 0700 "$home"
     done
 }
 

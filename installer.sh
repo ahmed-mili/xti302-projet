@@ -135,6 +135,37 @@ securiser_homes() {
     done
 }
 
+# installer_ssh : installe la configuration SSH durcie (config/ssh/sshd_config.d).
+# Risque : une mauvaise config peut nous enfermer dehors. Trois précautions :
+#   - cette étape passe APRÈS les comptes : le groupe acces_ssh existe et
+#     contient les admins quand AllowGroups entre en vigueur ;
+#   - on vérifie que ahmed est bien dans acces_ssh avant de copier ;
+#   - sshd -t valide la config, et ssh n'est redémarré que si elle est bonne.
+# Les sessions déjà ouvertes survivent au redémarrage de ssh.
+installer_ssh() {
+    echo "==> SSH"
+    local source="${DOSSIER_DEPOT}/config/ssh/sshd_config.d/10-pixelia.conf"
+    local cible="/etc/ssh/sshd_config.d/10-pixelia.conf"
+
+    if ! id -nG ahmed | tr ' ' '\n' | grep -qx acces_ssh; then
+        erreur "ahmed n'est pas dans acces_ssh : AllowGroups nous enfermerait dehors"
+        exit 1
+    fi
+
+    install -o root -g root -m 0644 "$source" "$cible"
+
+    # Si la config est invalide, on retire notre fichier : sshd retrouve sa
+    # config d'avant et le service en cours n'est pas touché.
+    if ! sshd -t; then
+        rm -f "$cible"
+        erreur "configuration SSH invalide, fichier retiré, ssh n'est pas redémarré"
+        exit 1
+    fi
+
+    systemctl restart ssh
+    echo "SSH durci et redémarré."
+}
+
 # ---------------------------------------------------------------------------
 # Programme principal
 # ---------------------------------------------------------------------------
@@ -148,6 +179,7 @@ main() {
     retirer_groupe_sudo
     verrouiller_root
     securiser_homes
+    installer_ssh
     echo "Installation terminée."
 }
 

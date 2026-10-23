@@ -453,6 +453,102 @@ test_C4_homes_prives() {
 }
 
 # ---------------------------------------------------------------------------
+# S1 à S5 : accès SSH
+# ---------------------------------------------------------------------------
+
+# valeur_sshd <mot-clé> : affiche la valeur réellement appliquée par sshd pour
+# ce mot-clé. "sshd -T" affiche la configuration finale (tous les fichiers
+# lus, la première valeur trouvée gagne), avec les mots-clés en minuscules.
+# Lire cette sortie est plus fiable que lire le fichier de config.
+valeur_sshd() {
+    sshd -T 2>/dev/null | awk -v cle="$1" '$1 == cle { print $2 }'
+}
+
+# test_S1_cle_seule : on ne se connecte que par clé (ni mot de passe, ni
+# questions-réponses au clavier).
+test_S1_cle_seule() {
+    local mot_de_passe
+    local clavier
+    local cle
+
+    mot_de_passe="$(valeur_sshd passwordauthentication)"
+    clavier="$(valeur_sshd kbdinteractiveauthentication)"
+    cle="$(valeur_sshd pubkeyauthentication)"
+
+    if [ "$mot_de_passe" = "no" ] && [ "$clavier" = "no" ] && [ "$cle" = "yes" ]; then
+        ok "S1" "SSH : clé publique seule (mot de passe et clavier désactivés)"
+    else
+        ko "S1" "SSH : passwordauthentication=${mot_de_passe} kbdinteractiveauthentication=${clavier} pubkeyauthentication=${cle}"
+    fi
+}
+
+# test_S2_root_interdit : root ne peut pas se connecter en SSH.
+test_S2_root_interdit() {
+    local valeur
+    valeur="$(valeur_sshd permitrootlogin)"
+
+    if [ "$valeur" = "no" ]; then
+        ok "S2" "SSH : connexion de root interdite"
+    else
+        ko "S2" "SSH : permitrootlogin=${valeur} (attendu no)"
+    fi
+}
+
+# test_S3_allowgroups : seul le groupe acces_ssh a le droit de se connecter.
+test_S3_allowgroups() {
+    local valeur
+    valeur="$(valeur_sshd allowgroups)"
+
+    if [ "$valeur" = "acces_ssh" ]; then
+        ok "S3" "SSH : réservé au groupe acces_ssh"
+    else
+        ko "S3" "SSH : allowgroups=${valeur} (attendu acces_ssh)"
+    fi
+}
+
+# test_S4_essais_et_inactivite : au plus 4 essais par connexion, et une session
+# inactive est coupée en 15 minutes (900 s) au plus. sshd envoie un message
+# toutes les "clientaliveinterval" secondes et coupe après "clientalivecountmax"
+# messages sans réponse : le délai de coupure est le produit des deux.
+test_S4_essais_et_inactivite() {
+    local essais
+    local intervalle
+    local nombre
+    local delai
+
+    essais="$(valeur_sshd maxauthtries)"
+    intervalle="$(valeur_sshd clientaliveinterval)"
+    nombre="$(valeur_sshd clientalivecountmax)"
+
+    # Une valeur vide ou non numérique ferait échouer les comparaisons : ko.
+    case "${essais}${intervalle}${nombre}" in
+        ""|*[!0-9]*)
+            ko "S4" "SSH : valeurs illisibles (maxauthtries=${essais} clientaliveinterval=${intervalle} clientalivecountmax=${nombre})"
+            return
+            ;;
+    esac
+
+    delai=$((intervalle * nombre))
+    if [ "$essais" -le 4 ] && [ "$intervalle" -gt 0 ] && [ "$delai" -le 900 ]; then
+        ok "S4" "SSH : ${essais} essais au plus, session inactive coupée après ${delai} s"
+    else
+        ko "S4" "SSH : maxauthtries=${essais} (max 4), coupure après ${delai} s (max 900, intervalle > 0)"
+    fi
+}
+
+# test_S5_config_dans_drop_in : la configuration est dans un fichier de
+# /etc/ssh/sshd_config.d/ (on ne touche pas à sshd_config) et sshd l'accepte.
+test_S5_config_dans_drop_in() {
+    if [ ! -f /etc/ssh/sshd_config.d/10-pixelia.conf ]; then
+        ko "S5" "SSH : /etc/ssh/sshd_config.d/10-pixelia.conf absent"
+    elif ! sshd -t 2>/dev/null; then
+        ko "S5" "SSH : sshd -t refuse la configuration"
+    else
+        ok "S5" "SSH : config dans sshd_config.d/10-pixelia.conf, validée par sshd -t"
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # Programme principal
 # ---------------------------------------------------------------------------
 
@@ -473,6 +569,11 @@ main() {
     test_C3_aucun_autre_sudo
     test_C4_root_verrouille
     test_C4_homes_prives
+    test_S1_cle_seule
+    test_S2_root_interdit
+    test_S3_allowgroups
+    test_S4_essais_et_inactivite
+    test_S5_config_dans_drop_in
 
     echo "--- ${NB_OK} / ${NB_TESTS} tests réussis"
 

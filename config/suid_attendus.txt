@@ -1,0 +1,14 @@
+# Fichiers setuid root attendus sur une Debian 13 minimale (un chemin par ligne).
+# Les lignes qui commencent par # sont ignorées par verifier.sh (test D3).
+/usr/lib/dbus-1.0/dbus-daemon-launch-helper
+/usr/lib/openssh/ssh-keysign
+/usr/bin/fusermount3
+/usr/bin/mount
+/usr/bin/gpasswd
+/usr/bin/su
+/usr/bin/chsh
+/usr/bin/chfn
+/usr/bin/umount
+/usr/bin/sudo
+/usr/bin/newgrp
+/usr/bin/passwd

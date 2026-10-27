@@ -881,6 +881,41 @@ test_J4_ip_dans_nom() {
     fi
 }
 
+# test_J4_nom_piege : noms d'utilisateur hostiles. "Accepted" n'est pas une
+# réussite, une adresse glissée dans le nom ne compte pas, et un PID réutilisé
+# par une connexion réussie ne doit pas effacer l'échec précédent.
+test_J4_nom_piege() {
+    local temporaire
+    local rapport
+    local echecs
+    local reussites
+
+    temporaire="$(mktemp)"
+    cat > "$temporaire" <<'JOURNAL'
+2026-10-12T20:00:00+0200 debian sshd-session[5001]: Invalid user Accepted from 203.0.113.9 port 4001
+2026-10-12T20:00:01+0200 debian sshd-session[5001]: Failed password for invalid user Accepted from 203.0.113.9 port 4001 ssh2
+2026-10-12T20:00:02+0200 debian sshd-session[5001]: Connection closed by invalid user Accepted 203.0.113.9 port 4001 [preauth]
+2026-10-12T20:00:03+0200 debian sshd-session[5002]: Invalid user x from 9.9.9.9 port 1 from 203.0.113.9 port 4002
+2026-10-12T20:00:04+0200 debian sshd-session[5002]: Connection closed by invalid user x from 9.9.9.9 port 1 203.0.113.9 port 4002 [preauth]
+2026-10-12T20:00:05+0200 debian sshd-session[5003]: Invalid user Accepted publickey for root from 6.6.6.6 port 1 from 203.0.113.9 port 4003
+2026-10-12T20:00:06+0200 debian sshd-session[5003]: Connection closed by invalid user z 203.0.113.9 port 4003 [preauth]
+2026-10-12T21:00:00+0200 debian sshd-session[5003]: Accepted publickey for alice from 192.168.56.1 port 5000 ssh2: ED25519 SHA256:abc
+JOURNAL
+    rapport="$(bash "$SCRIPT_ANALYSE" -f "$temporaire" 2>&1)"
+    rm -f "$temporaire"
+
+    echecs="$(echo "$rapport" | sed -n '/^=== Échecs de connexion/,/^=== Comptes visés/p')"
+    reussites="$(echo "$rapport" | sed -n '/^=== Connexions réussies/,/^=== Bilan/p')"
+
+    if [ "$(nombre_echecs_ip 203.0.113.9 "$rapport")" = "3" ] \
+        && ! echo "$echecs" | grep -q -e '9\.9\.9\.9' -e '6\.6\.6\.6' \
+        && ! echo "$reussites" | grep -q 'root.*6\.6\.6\.6'; then
+        ok "J4" "analyse : noms piégés (203.0.113.9=3, 9.9.9.9 et 6.6.6.6 ignorés)"
+    else
+        ko "J4" "analyse : noms piégés mal traités (203.0.113.9 devrait compter 3, rien pour 9.9.9.9 et 6.6.6.6)"
+    fi
+}
+
 # test_J4_proprietaire_root : le script installé appartient à root:root et
 # seul root peut l'écrire (support le lance en root via sudo).
 test_J4_proprietaire_root() {
@@ -1197,6 +1232,100 @@ test_B1_verrou() {
 }
 
 # ---------------------------------------------------------------------------
+# D2, D3 : écoutes réseau et fichiers sensibles
+# ---------------------------------------------------------------------------
+
+# test_D2_seul_ssh_ecoute : toute écoute hors boucle locale (127.0.0.0/8 et
+# ::1) doit être sur le port 22. Seule exception : le client DHCP (UDP 68 en
+# IPv4, UDP 546 en IPv6), qui écoute pour recevoir son bail d'adresse. Ce n'est
+# pas un service offert aux autres machines. ss -tulnH liste les ports TCP et
+# UDP en écoute, sans en-tête ; la 5e colonne est "adresse:port".
+test_D2_seul_ssh_ecoute() {
+    local proto
+    local locale
+    local adresse
+    local port
+    local intrus=""
+
+    while read -r proto _ _ _ locale _; do
+        port="${locale##*:}"
+        adresse="${locale%:*}"
+        # On enlève le nom de l'interface éventuel (fe80::1%ens33).
+        adresse="${adresse%%\%*}"
+
+        # Boucle locale : jamais joignable depuis le réseau.
+        case "$adresse" in
+            127.*|"[::1]") continue ;;
+        esac
+
+        # SSH : le seul service attendu.
+        if [ "$port" = "22" ]; then
+            continue
+        fi
+
+        # Client DHCP : UDP 68 (IPv4) et UDP 546 (IPv6).
+        if [ "$proto" = "udp" ] && { [ "$port" = "68" ] || [ "$port" = "546" ]; }; then
+            continue
+        fi
+
+        intrus="${intrus} ${proto}/${port}"
+    done < <(ss -tulnH 2>/dev/null)
+
+    if [ -z "$intrus" ]; then
+        ok "D2" "écoutes réseau : seul SSH (22) écoute, hors client DHCP et boucle locale"
+    else
+        ko "D2" "écoutes réseau en trop :${intrus}"
+    fi
+}
+
+# test_D3_aucun_fichier_modifiable_par_tous : un fichier modifiable par tous
+# permettrait à n'importe quel compte de le remplacer. Seuls les répertoires
+# avec sticky bit (comme /tmp) peuvent l'être. -xdev reste sur la partition
+# racine : on ne descend pas dans /proc ni /sys. ! -type l ignore les liens
+# symboliques (leurs droits sont toujours 777 et ne comptent pas).
+test_D3_aucun_fichier_modifiable_par_tous() {
+    local trouves
+
+    trouves="$(find / -xdev ! -type l -perm -0002 \
+        ! -path /tmp -prune ! -path '/tmp/*' \
+        ! -path /var/tmp -prune ! -path '/var/tmp/*' \
+        ! -path /dev/shm -prune ! -path '/dev/shm/*' \
+        ! \( -type d -perm -1000 \) 2>/dev/null)"
+
+    if [ -z "$trouves" ]; then
+        ok "D3" "aucun fichier modifiable par tous (hors répertoires à sticky bit)"
+    else
+        ko "D3" "modifiable par tous : $(echo "$trouves" | head -5 | tr '\n' ' ')"
+    fi
+}
+
+# test_D3_suid_connus : chaque fichier setuid doit figurer, avec son chemin
+# exact, dans config/suid_attendus.txt. Un setuid inconnu est une porte
+# d'élévation de privilèges possible. grep -Fxq compare ligne à ligne.
+test_D3_suid_connus() {
+    local liste="${DOSSIER_DEPOT}/config/suid_attendus.txt"
+    local fichier
+    local inconnus=""
+
+    if [ ! -f "$liste" ]; then
+        ko "D3" "setuid : ${liste} introuvable"
+        return
+    fi
+
+    while IFS= read -r fichier; do
+        if ! grep -v '^#' "$liste" | grep -Fxq -- "$fichier"; then
+            inconnus="${inconnus} ${fichier}"
+        fi
+    done < <(find / -xdev -type f -perm -4000 2>/dev/null)
+
+    if [ -z "$inconnus" ]; then
+        ok "D3" "fichiers setuid : tous présents dans suid_attendus.txt"
+    else
+        ko "D3" "setuid inconnus :${inconnus}"
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # Programme principal
 # ---------------------------------------------------------------------------
 
@@ -1238,7 +1367,11 @@ main() {
     test_J4_proprietaire_root
     test_J4_sshd_session
     test_J4_support_sans_f
+    test_J4_nom_piege
     test_D1_mises_a_jour_auto
+    test_D2_seul_ssh_ecoute
+    test_D3_aucun_fichier_modifiable_par_tous
+    test_D3_suid_connus
     test_B1_disque_monte
     test_B1_versions_datees
     test_B1_incrementale

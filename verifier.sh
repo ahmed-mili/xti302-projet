@@ -809,25 +809,75 @@ test_J4_journal_vide() {
     fi
 }
 
-# test_J4_pas_de_double_compte : une tentative = une ligne comptée. Une
-# tentative sur un compte inconnu écrit deux lignes ("Invalid user" puis
-# "Failed password for invalid user"), qui ne doivent compter que pour un.
-# Valeur attendue pour 198.51.100.23 : 3. Comptée à la main dans le journal
-# d'exemple : 3 lignes "Invalid user" (pi, git, deploy) venant de cette
-# adresse, une par processus sshd-session (pid 1184, 1191, 1198), soit
-# 3 tentatives. On lit le nombre dans la section "Échecs de connexion par
-# adresse IP" (colonne 1, l'adresse est en colonne 2).
+# nombre_echecs_ip <adresse> <rapport> : lit dans la section "Échecs de
+# connexion par adresse IP" du rapport le nombre affiché pour l'adresse (colonne 1,
+# l'adresse est en colonne 2). N'affiche rien si l'adresse n'y figure pas.
+nombre_echecs_ip() {
+    echo "$2"         | sed -n '/^=== Échecs de connexion/,/^=== Comptes visés/p'         | awk -v adresse="$1" '$2 == adresse { print $1 }'
+}
+
+# test_J4_pas_de_double_compte : on compte par connexion (un numéro de
+# processus sshd-session), pas par ligne. Une connexion en échec vaut autant
+# de tentatives que de lignes "Failed password", ou 1 s'il n'y en a aucune.
+# Une connexion qui a une ligne "Accepted" n'est pas en échec.
+# Valeurs attendues, comptées à la main dans le journal d'exemple :
+#   203.0.113.45 : 10 = 6 connexions sur des comptes inconnus (pid 1128, 1135,
+#                  1142, 1149, 1156, 1163), chacune avec "Invalid user" ET
+#                  "Failed password for invalid user" = 1 tentative chacune
+#                  (6, pas 12) ; + pid 1170 : 3 lignes "Failed password" pour
+#                  root = 3 tentatives dans UNE connexion ; + pid 1177 : 1.
+#   198.51.100.23 : 3 = 3 connexions (pid 1184, 1191, 1198), 1 tentative chacune.
+#   192.0.2.77 : 2 = 2 connexions (pid 1205, 1212) qui ne laissent que
+#                "Connection closed by authenticating user root" (aucun
+#                Failed password) : 1 tentative chacune.
+#   192.168.56.1 : 1 = le seul pid en échec est 1114 (bob, "not allowed
+#                because") ; les pid 1100 (alice, qui finit par "Accepted") et
+#                1107 (etu, "Accepted") sont des connexions réussies.
 test_J4_pas_de_double_compte() {
-    local nombre
+    local rapport
+    local resultat=""
+    local ligne
+    local adresse
+    local attendu
+    local obtenu
+    local tout_bon="oui"
 
-    nombre="$(bash "$SCRIPT_ANALYSE" -f "$JOURNAL_EXEMPLE" 2>&1 \
-        | sed -n '/^=== Échecs de connexion/,/^=== Comptes visés/p' \
-        | awk '$2 == "198.51.100.23" { print $1 }')"
+    rapport="$(bash "$SCRIPT_ANALYSE" -f "$JOURNAL_EXEMPLE" 2>&1)"
 
-    if [ "$nombre" = "3" ]; then
-        ok "J4" "analyse : 198.51.100.23 compté 3 fois pour 3 tentatives (pas de double compte)"
+    for ligne in "203.0.113.45 10" "198.51.100.23 3" "192.0.2.77 2" "192.168.56.1 1"; do
+        adresse="${ligne% *}"
+        attendu="${ligne#* }"
+        obtenu="$(nombre_echecs_ip "$adresse" "$rapport")"
+        resultat="${resultat} ${adresse}=${obtenu:-0}"
+        if [ "$obtenu" != "$attendu" ]; then
+            tout_bon="non"
+        fi
+    done
+
+    if [ "$tout_bon" = "oui" ]; then
+        ok "J4" "analyse : comptage par connexion exact (${resultat# })"
     else
-        ko "J4" "analyse : 198.51.100.23 compté ${nombre:-0} fois (attendu 3 tentatives)"
+        ko "J4" "analyse : comptage par connexion faux (${resultat# }), attendu 203.0.113.45=10 198.51.100.23=3 192.0.2.77=2 192.168.56.1=1"
+    fi
+}
+
+# test_J4_ip_dans_nom : un nom d'utilisateur qui ressemble à une adresse IP ne
+# doit pas fausser les comptes. L'adresse d'une connexion se lit seulement
+# juste avant le mot "port" : ici 203.0.113.7, jamais 10.9.9.9 (le nom).
+# Le fichier est créé dans un fichier temporaire, supprimé aussitôt.
+test_J4_ip_dans_nom() {
+    local temporaire
+    local rapport
+
+    temporaire="$(mktemp)"
+    echo '2026-10-12T20:00:00+0200 debian sshd-session[4001]: Invalid user 10.9.9.9 from 203.0.113.7 port 4242' > "$temporaire"
+    rapport="$(bash "$SCRIPT_ANALYSE" -f "$temporaire" 2>&1)"
+    rm -f "$temporaire"
+
+    if [ "$(nombre_echecs_ip 203.0.113.7 "$rapport")" = "1" ] && [ -z "$(nombre_echecs_ip 10.9.9.9 "$rapport")" ]; then
+        ok "J4" "analyse : l'adresse vient de \"IP port N\" (203.0.113.7 compté, 10.9.9.9 ignoré)"
+    else
+        ko "J4" "analyse : 203.0.113.7 devrait compter 1 et 10.9.9.9 rien"
     fi
 }
 
@@ -1139,6 +1189,7 @@ main() {
     test_J4_sous_le_seuil
     test_J4_journal_vide
     test_J4_pas_de_double_compte
+    test_J4_ip_dans_nom
     test_J4_proprietaire_root
     test_J4_sshd_session
     test_J4_support_sans_f

@@ -149,18 +149,61 @@ afficher_section() {
 # Les trois parties du rapport sont d'abord calculées dans des fichiers
 # temporaires, puis affichées. Chaque calcul est une chaîne de commandes.
 
-# calculer_echecs : garde UNE ligne par tentative, extrait l'adresse IPv4 de
-# chacune (même expression régulière que le TP), puis compte et trie par nombre
-# décroissant. Une tentative sur un compte inconnu écrit "Invalid user" PUIS
-# "Failed password for invalid user" : on écarte la seconde, déjà comptée. On
-# ne se limite pas à "Failed password" : avec une config clé seule, une
-# tentative ne laisse que "Invalid user" (aucun Failed password), elle serait invisible.
-# "|| true" : grep rend 1 quand rien ne correspond, ce qui n'est pas une erreur ici.
+# calculer_echecs : compte les échecs PAR CONNEXION, pas par ligne. Une
+# connexion = un numéro de processus "sshd-session[PID]" (ou "sshd[PID]") : toutes
+# ses lignes portent le même PID. Une seule connexion peut écrire plusieurs
+# lignes ("Invalid user" puis "Failed password for invalid user", ou trois
+# "Failed password" de suite) : compter les lignes la compterait plusieurs fois.
+# Règles, appliquées par awk :
+#   - l'adresse se lit SEULEMENT devant " port" ("from IP port" ou "IP port") :
+#     un nom d'utilisateur qui ressemble à une IP ne fausse pas le résultat ;
+#   - signes d'échec : "Failed password", "Invalid user", "not allowed because",
+#     "Connection closed by authenticating user" ;
+#   - une connexion qui a une ligne "Accepted" n'est pas en échec ;
+#   - une connexion en échec compte le nombre de lignes "Failed password",
+#     au minimum 1 (un "Invalid user" seul, une config clé seule...).
+# Le résultat est trié par nombre décroissant, au format de "uniq -c".
+# "|| true" : un journal vide ne doit pas faire échouer le script.
 calculer_echecs() {
-    grep -E 'Failed password for|Invalid user|not allowed because' "$JOURNAL" \
-        | grep -v 'Failed password for invalid user' \
-        | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' \
-        | sort | uniq -c | sort -rn > "$ECHECS_PAR_IP" || true
+    awk '
+        # Ignorer les lignes qui ne viennent pas d un processus sshd.
+        !match($0, /sshd(-session)?\[[0-9]+\]/) { next }
+
+        {
+            # pid = numéro entre crochets, par exemple 1170.
+            pid = substr($0, RSTART, RLENGTH)
+
+            # Adresse de la connexion : un IPv4 suivi de " port".
+            if (match($0, /[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+ port/)) {
+                adresse[pid] = substr($0, RSTART, RLENGTH - 5)
+            }
+
+            if ($0 ~ /Accepted /) { acceptee[pid] = 1 }
+
+            if ($0 ~ /Failed password/) {
+                nombre_mots_de_passe[pid]++
+                en_echec[pid] = 1
+            }
+            if ($0 ~ /Invalid user|not allowed because|Connection closed by authenticating user/) {
+                en_echec[pid] = 1
+            }
+        }
+
+        END {
+            for (pid in en_echec) {
+                # Connexion réussie, ou adresse inconnue : rien à compter.
+                if (acceptee[pid] || adresse[pid] == "") { continue }
+
+                # max(1, nombre de Failed password)
+                points = nombre_mots_de_passe[pid]
+                if (points < 1) { points = 1 }
+                total[adresse[pid]] += points
+            }
+            for (ip in total) { print total[ip], ip }
+        }
+    ' "$JOURNAL" \
+        | sort -k1,1nr -k2,2 \
+        | awk '{ printf "%7d %s\n", $1, $2 }' > "$ECHECS_PAR_IP" || true
 }
 
 # calculer_comptes : extrait le nom du compte visé par chaque ligne d'échec.

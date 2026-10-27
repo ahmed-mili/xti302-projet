@@ -154,51 +154,78 @@ afficher_section() {
 # ses lignes portent le même PID. Une seule connexion peut écrire plusieurs
 # lignes ("Invalid user" puis "Failed password for invalid user", ou trois
 # "Failed password" de suite) : compter les lignes la compterait plusieurs fois.
-# Règles, appliquées par awk :
-#   - l'adresse se lit SEULEMENT devant " port" ("from IP port" ou "IP port") :
-#     un nom d'utilisateur qui ressemble à une IP ne fausse pas le résultat ;
-#   - signes d'échec : "Failed password", "Invalid user", "not allowed because",
-#     "Connection closed by authenticating user" ;
+# Le nom d'utilisateur est écrit dans le journal tel que l'attaquant l'a tapé :
+# un nom comme "Accepted" ou "x from 9.9.9.9 port 1" ne doit rien fausser.
+# On ne lit donc que ce que sshd écrit lui-même :
+#   - le message commence après le PREMIER "sshd-session[PID]: " de la ligne
+#     (le nom d'utilisateur vient toujours après) ; "Accepted", les échecs et
+#     les fins de connexion sont cherchés au DÉBUT de ce message ;
+#   - l'adresse est prise dans la fin fixe de la ligne, "IP port N" suivi de
+#     "ssh2", "[preauth]" ou rien : la seule IP collée à la fin de la ligne.
+# Règles de comptage, appliquées par awk :
+#   - signes d'échec : "Failed password for", "Invalid user", "User ... not
+#     allowed because", "Connection closed by authenticating user" ;
 #   - une connexion qui a une ligne "Accepted" n'est pas en échec ;
 #   - une connexion en échec compte le nombre de lignes "Failed password",
-#     au minimum 1 (un "Invalid user" seul, une config clé seule...).
+#     au minimum 1 (un "Invalid user" seul, une config clé seule...) ;
+#   - un PID peut resservir plus tard pour une autre connexion : dès qu'une
+#     ligne de fin ("Connection closed by", "Disconnected from", "Received
+#     disconnect from") arrive, la connexion est comptée puis oubliée.
 # Le résultat est trié par nombre décroissant, au format de "uniq -c".
 # "|| true" : un journal vide ne doit pas faire échouer le script.
 calculer_echecs() {
     awk '
-        # Ignorer les lignes qui ne viennent pas d un processus sshd.
-        !match($0, /sshd(-session)?\[[0-9]+\]/) { next }
+        # fermer(cle) : ajoute la connexion au total de son adresse, si elle
+        # est en échec, puis efface tout ce qu on savait d elle.
+        function fermer(cle,    points) {
+            if (en_echec[cle] && !acceptee[cle] && adresse[cle] != "") {
+                # max(1, nombre de Failed password)
+                points = nombre_mots_de_passe[cle]
+                if (points < 1) { points = 1 }
+                total[adresse[cle]] += points
+            }
+            delete en_echec[cle]
+            delete acceptee[cle]
+            delete adresse[cle]
+            delete nombre_mots_de_passe[cle]
+        }
 
         {
-            # pid = numéro entre crochets, par exemple 1170.
-            pid = substr($0, RSTART, RLENGTH)
+            # Ignorer les lignes qui ne viennent pas d un processus sshd.
+            # match trouve la PREMIÈRE étiquette, celle écrite par le système.
+            if (!match($0, /sshd(-session)?\[[0-9]+\]: /)) { next }
 
-            # Adresse de la connexion : un IPv4 suivi de " port".
-            if (match($0, /[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+ port/)) {
-                adresse[pid] = substr($0, RSTART, RLENGTH - 5)
+            # cle = machine (2e champ) + étiquette, par exemple
+            # "debian sshd-session[1170]: " ; message = la suite de la ligne.
+            cle = $2 " " substr($0, RSTART, RLENGTH)
+            message = substr($0, RSTART + RLENGTH)
+
+            # Adresse : seulement la première fois pour cette connexion.
+            if (adresse[cle] == "" && match(message, / [0-9]+\.[0-9]+\.[0-9]+\.[0-9]+ port [0-9]+( ssh2| \[preauth\])?$/)) {
+                # morceaux[1] = l adresse, morceaux[2] = "port"...
+                split(substr(message, RSTART + 1), morceaux, " ")
+                adresse[cle] = morceaux[1]
             }
 
-            if ($0 ~ /Accepted /) { acceptee[pid] = 1 }
+            if (message ~ /^Accepted /) { acceptee[cle] = 1 }
 
-            if ($0 ~ /Failed password/) {
-                nombre_mots_de_passe[pid]++
-                en_echec[pid] = 1
+            if (message ~ /^Failed password for /) {
+                nombre_mots_de_passe[cle]++
+                en_echec[cle] = 1
             }
-            if ($0 ~ /Invalid user|not allowed because|Connection closed by authenticating user/) {
-                en_echec[pid] = 1
+            if (message ~ /^Invalid user |^User .* not allowed because |^Connection closed by authenticating user /) {
+                en_echec[cle] = 1
+            }
+
+            # Fin de la connexion : on la compte et on l oublie.
+            if (message ~ /^Connection closed by |^Disconnected from |^Received disconnect from /) {
+                fermer(cle)
             }
         }
 
         END {
-            for (pid in en_echec) {
-                # Connexion réussie, ou adresse inconnue : rien à compter.
-                if (acceptee[pid] || adresse[pid] == "") { continue }
-
-                # max(1, nombre de Failed password)
-                points = nombre_mots_de_passe[pid]
-                if (points < 1) { points = 1 }
-                total[adresse[pid]] += points
-            }
+            # Les connexions restées ouvertes à la fin du journal.
+            for (cle in en_echec) { fermer(cle) }
             for (ip in total) { print total[ip], ip }
         }
     ' "$JOURNAL" \
@@ -213,19 +240,26 @@ calculer_echecs() {
 #   Failed password for COMPTE from ...
 #   Invalid user COMPTE from ...
 #   User COMPTE from ... not allowed because ...
+# Comme dans calculer_echecs, le message doit COMMENCER juste après la
+# première étiquette "sshd-session[PID]: " : "^[^[]*" avance jusqu'au premier
+# crochet (date et machine n'en contiennent pas). Un nom d'utilisateur qui
+# contient "Failed password for ..." ne crée donc pas de faux compte visé.
+# \2 : le groupe 1 est "(-session)", le compte est le groupe 2.
 calculer_comptes() {
     sed -nE \
-        -e 's/.*Failed password for ([^ ]+) from .*/\1/p' \
-        -e 's/.*Invalid user ([^ ]+) from .*/\1/p' \
-        -e 's/.*User ([^ ]+) from .* not allowed because.*/\1/p' \
+        -e 's/^[^[]*sshd(-session)?\[[0-9]+\]: Failed password for ([^ ]+) from .*/\2/p' \
+        -e 's/^[^[]*sshd(-session)?\[[0-9]+\]: Invalid user ([^ ]+) from .*/\2/p' \
+        -e 's/^[^[]*sshd(-session)?\[[0-9]+\]: User ([^ ]+) from .* not allowed because.*/\2/p' \
         "$JOURNAL" \
         | sort | uniq -c | sort -rn > "$COMPTES_VISES" || true
 }
 
 # calculer_connexions : les connexions réussies, "Accepted <méthode> for COMPTE
 # from ADRESSE ...", affichées sous la forme "COMPTE depuis ADRESSE".
+# Même ancrage que calculer_comptes : un nom d'utilisateur qui contient
+# "Accepted ..." ne fabrique pas une fausse connexion réussie.
 calculer_connexions() {
-    sed -nE 's/.*Accepted [^ ]+ for ([^ ]+) from ([^ ]+) .*/\1 depuis \2/p' "$JOURNAL" \
+    sed -nE 's/^[^[]*sshd(-session)?\[[0-9]+\]: Accepted [^ ]+ for ([^ ]+) from ([^ ]+) .*/\2 depuis \3/p' "$JOURNAL" \
         | sort | uniq -c | sort -rn > "$CONNEXIONS" || true
 }
 

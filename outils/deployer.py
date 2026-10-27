@@ -26,8 +26,18 @@ CHEMIN_CLE = os.path.expanduser("~/.ssh/vm_tp_ed25519")
 DOSSIER_DEPOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DOSSIER_VM = "projet"  # relatif au répertoire personnel : ~/projet
 
-# Dossiers qu'on n'envoie jamais dans la VM.
-DOSSIERS_EXCLUS = {".git", ".superpowers", "__pycache__"}
+# Dossiers qu'on n'envoie jamais dans la VM, en plus des dossiers cachés
+# (nom qui commence par un point, comme .git) : voir dossier_a_envoyer.
+DOSSIERS_EXCLUS = {"__pycache__"}
+
+
+def dossier_a_envoyer(nom):
+    """Dit si un dossier part dans la VM : ni caché, ni dans DOSSIERS_EXCLUS."""
+    if nom.startswith("."):
+        return False
+    if nom in DOSSIERS_EXCLUS:
+        return False
+    return True
 
 
 def lire_mot_de_passe():
@@ -71,12 +81,12 @@ def se_connecter():
 
 
 def fabriquer_archive():
-    """Construit en mémoire une archive tar du dépôt (sans .git ni .superpowers)."""
+    """Construit en mémoire une archive tar du dépôt (sans les dossiers cachés)."""
     tampon = io.BytesIO()
     with tarfile.open(fileobj=tampon, mode="w") as archive:
         for dossier, sous_dossiers, fichiers in os.walk(DOSSIER_DEPOT):
             # On retire les dossiers exclus de la liste pour que os.walk n'y entre pas.
-            sous_dossiers[:] = [d for d in sous_dossiers if d not in DOSSIERS_EXCLUS]
+            sous_dossiers[:] = [d for d in sous_dossiers if dossier_a_envoyer(d)]
             for nom in fichiers:
                 chemin = os.path.join(dossier, nom)
                 nom_dans_archive = os.path.relpath(chemin, DOSSIER_DEPOT).replace(os.sep, "/")

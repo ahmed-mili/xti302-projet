@@ -117,6 +117,14 @@ sauvegarder() {
         echec "la version ${nouvelle} existe déjà"
     fi
 
+    # Les noms se trient comme les dates. Si la nouvelle est AVANT la dernière
+    # version, l'horloge de la machine est en retard : la rotation prendrait
+    # la nouvelle pour la plus ancienne. On refuse plutôt que de désordonner
+    # les versions.
+    if [ -n "$precedente" ] && [[ "$nouvelle" < "$precedente" ]]; then
+        echec "l'horloge est en retard : ${nouvelle} est antérieure à la dernière version ${precedente}"
+    fi
+
     mkdir -p "${DOSSIER_VERSIONS}/${nouvelle}.partielle"
 
     # Sans slash final, rsync copie les dossiers eux-mêmes : on obtient etc/ et srv/.
@@ -134,14 +142,19 @@ mettre_a_jour_lien() {
     ln -sfn "$1" "${DOSSIER_VERSIONS}/derniere"
 }
 
-# faire_rotation : supprime les versions au-delà des NB_VERSIONS_GARDEES plus
-# récentes. Les versions se partagent des fichiers par liens durs : supprimer
+# faire_rotation <version créée> : supprime les plus anciennes versions pour
+# n'en garder que NB_VERSIONS_GARDEES, la version qu'on vient de créer comprise.
+# Cette version n'est jamais supprimée : on la retire de la liste avant de
+# choisir. Les versions se partagent des fichiers par liens durs : supprimer
 # une ancienne version ne casse pas les autres.
 faire_rotation() {
+    local creee="$1"
     local version
 
-    # head -n -7 affiche tout SAUF les 7 dernières lignes, donc les plus anciennes.
-    for version in $(lister_versions | head -n "-${NB_VERSIONS_GARDEES}"); do
+    # grep -vx retire la version créée de la liste. head -n -6 affiche tout
+    # SAUF les 6 dernières lignes : 6 anciennes + la nouvelle font 7. Le
+    # "|| true" évite que set -e arrête le script quand la liste est vide.
+    for version in $( (lister_versions | grep -vx "$creee" || true) | head -n "-$((NB_VERSIONS_GARDEES - 1))"); do
         rm -rf "${DOSSIER_VERSIONS:?}/${version}"
         journaliser "ancienne version supprimée : ${version}"
     done
@@ -155,6 +168,15 @@ faire_rotation() {
 main() {
     local version
 
+    # Verrou : si une autre sauvegarde tourne déjà, on s'arrête tout de suite.
+    # Sans lui, la seconde supprimerait la copie ".partielle" de la première
+    # (voir plus bas). exec 9>fichier ouvre le fichier sous le numéro 9 et le
+    # garde ouvert jusqu'à la fin du script ; flock -n 9 pose le verrou sur
+    # ce numéro (-n : sans attendre). Le système le libère à la fin du script,
+    # même après un plantage.
+    exec 9>/run/sauvegarde.lock
+    flock -n 9 || echec "une sauvegarde est déjà en cours"
+
     verifier_disque
     mkdir -p "$DOSSIER_VERSIONS"
 
@@ -167,7 +189,7 @@ main() {
 
     sauvegarder "$version"
     mettre_a_jour_lien "$version"
-    faire_rotation
+    faire_rotation "$version"
 
     journaliser "sauvegarde terminée : ${version}"
 }

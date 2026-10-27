@@ -343,10 +343,12 @@ installer_disque_sauvegarde() {
 
     # Garde-fou : on ne touche jamais au disque qui porte le système.
     source_racine="$(findmnt -n -o SOURCE /)"
-    if [ "${source_racine#"$DISQUE_SAUVEGARDE"}" != "$source_racine" ]; then
-        erreur "${DISQUE_SAUVEGARDE} porte le système (/ est sur ${source_racine}) : on n'y touche pas"
-        exit 1
-    fi
+    case "$source_racine" in
+        "${DISQUE_SAUVEGARDE}"*)
+            erreur "${DISQUE_SAUVEGARDE} porte le système (/ est sur ${source_racine}) : on n'y touche pas"
+            exit 1
+            ;;
+    esac
 
     if disque_est_vide; then
         preparer_disque_vierge
@@ -357,10 +359,18 @@ installer_disque_sauvegarde() {
     # On retrouve la partition par son étiquette. Elle doit être sur le
     # second disque : sinon on s'arrête plutôt que de monter autre chose.
     partition="$(blkid -L "$ETIQUETTE_SAUVEGARDE" || true)"
-    if [ -z "$partition" ] || [ "${partition#"$DISQUE_SAUVEGARDE"}" = "$partition" ]; then
-        erreur "aucun système de fichiers \"${ETIQUETTE_SAUVEGARDE}\" sur ${DISQUE_SAUVEGARDE} : rien n'a été modifié"
+    if [ -z "$partition" ]; then
+        erreur "aucun système de fichiers \"${ETIQUETTE_SAUVEGARDE}\" : rien n'a été modifié"
         exit 1
     fi
+    case "$partition" in
+        "${DISQUE_SAUVEGARDE}"*)
+            ;;
+        *)
+            erreur "le système de fichiers \"${ETIQUETTE_SAUVEGARDE}\" est sur ${partition}, pas sur ${DISQUE_SAUVEGARDE} : rien n'a été modifié"
+            exit 1
+            ;;
+    esac
     uuid="$(blkid -s UUID -o value "$partition")"
 
     mkdir -p "$POINT_DE_MONTAGE"
@@ -387,9 +397,11 @@ installer_disque_sauvegarde() {
 
 # installer_sauvegarde : installe sauvegarde.sh et son minuteur (B1, B2).
 # Le script est en root:root 0755 dans /usr/local/sbin, comme analyse_logs.sh.
-# Le timer lance la sauvegarde chaque nuit. Une première sauvegarde est faite
-# tout de suite SEULEMENT s'il n'y a encore aucune version : relancer
-# installer.sh ne crée donc pas de version en plus.
+# Le timer lance la sauvegarde chaque nuit. On lance des sauvegardes tout de
+# suite SEULEMENT tant qu'il y a moins de 2 versions : verifier.sh (B1) exige
+# deux versions pour prouver les liens durs, et ainsi les tests passent juste
+# après une installation neuve (démo de soutenance). Une fois 2 versions
+# présentes, relancer installer.sh ne crée plus de version en plus.
 installer_sauvegarde() {
     echo "==> Sauvegarde"
     local nombre_de_versions
@@ -405,12 +417,14 @@ installer_sauvegarde() {
     # grep -c compte les versions datées ; il rend 1 quand il en trouve 0,
     # d'où le "|| true" (sans lui, set -e arrêterait le script).
     nombre_de_versions="$(find "${POINT_DE_MONTAGE}/versions" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | grep -cE '^[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{6}$' || true)"
-    if [ "$nombre_de_versions" -eq 0 ]; then
-        echo "Aucune version : première sauvegarde."
+    while [ "$nombre_de_versions" -lt 2 ]; do
+        echo "${nombre_de_versions} version(s) : sauvegarde supplémentaire."
         /usr/local/sbin/sauvegarde.sh
-    else
-        echo "${nombre_de_versions} version(s) déjà présente(s) : pas de nouvelle sauvegarde."
-    fi
+        nombre_de_versions=$((nombre_de_versions + 1))
+        # Deux versions dans la même seconde auraient le même nom.
+        sleep 1
+    done
+    echo "${nombre_de_versions} version(s) présente(s)."
 }
 
 # ---------------------------------------------------------------------------

@@ -974,7 +974,8 @@ lister_versions() {
     find "$DOSSIER_VERSIONS" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{6}$' | sort
 }
 
-# test_B1_disque_monte : /sauvegardes est monté depuis le second disque, et
+# test_B1_disque_monte : /sauvegardes est monté depuis le disque d'étiquette
+# "sauvegardes" (le second disque), et
 # /etc/fstab le monte par UUID avec l'option nofail (la VM démarre même si le
 # disque manque).
 test_B1_disque_monte() {
@@ -985,8 +986,9 @@ test_B1_disque_monte() {
     source="$(findmnt -n -o SOURCE "$POINT_SAUVEGARDE" 2>/dev/null)"
     ligne_fstab="$(grep -E "^UUID=[^[:space:]]+[[:space:]]+${POINT_SAUVEGARDE}[[:space:]]" /etc/fstab)"
 
-    if [ "$source" != "/dev/sdb1" ] && [ "$source" != "/dev/sdb" ]; then
-        ko "B1" "disque : ${POINT_SAUVEGARDE} n'est pas monté depuis /dev/sdb (source : ${source:-aucune})"
+    # Le disque monté doit être celui qui porte l'étiquette "sauvegardes".
+    if [ -z "$source" ] || [ "$source" != "$(blkid -L sauvegardes 2>/dev/null)" ]; then
+        ko "B1" "disque : ${POINT_SAUVEGARDE} n'est pas monté depuis le disque d'étiquette sauvegardes (source : ${source:-aucune})"
         return
     fi
 
@@ -1065,7 +1067,8 @@ test_B1_acl_conservees() {
 }
 
 # test_B1_rotation : le script garde 7 versions (la valeur est écrite dans
-# sauvegarde.sh) et il n'y en a pas plus de 7 sur le disque.
+# sauvegarde.sh), le script installé est celui du dépôt, et il n'y a pas plus
+# de 7 versions sur le disque.
 test_B1_rotation() {
     local nombre
 
@@ -1073,6 +1076,8 @@ test_B1_rotation() {
 
     if ! grep -qx 'NB_VERSIONS_GARDEES=7' "${DOSSIER_DEPOT}/sauvegarde.sh" 2>/dev/null; then
         ko "B1" "rotation : NB_VERSIONS_GARDEES=7 absent de sauvegarde.sh"
+    elif ! cmp -s "${DOSSIER_DEPOT}/sauvegarde.sh" /usr/local/sbin/sauvegarde.sh; then
+        ko "B1" "rotation : /usr/local/sbin/sauvegarde.sh diffère de celui du dépôt"
     elif [ "$nombre" -gt 7 ]; then
         ko "B1" "rotation : ${nombre} versions sur le disque (7 au plus)"
     else
@@ -1110,44 +1115,84 @@ test_B2_journalisee() {
 # les admins (par sudo) y accèdent ; un développeur ne peut pas le lire.
 test_B3_acces_admins() {
     local droits
+    local login
 
     droits="$(stat -c '%U:%G %a' "$POINT_SAUVEGARDE" 2>/dev/null)"
 
     if [ "$droits" != "root:root 700" ]; then
         ko "B3" "accès : ${POINT_SAUVEGARDE} est en ${droits:-absent} (root:root 700 attendu)"
-    elif peut_lire jdupont "$POINT_SAUVEGARDE"; then
-        ko "B3" "accès : jdupont peut lire ${POINT_SAUVEGARDE}"
-    else
-        ok "B3" "accès : ${POINT_SAUVEGARDE} en root:root 700, jdupont ne peut pas le lire"
+        return
     fi
+
+    # Un développeur, le compte support et un freelance ne doivent pas lire.
+    for login in jdupont support kdurand; do
+        if peut_lire "$login" "$POINT_SAUVEGARDE"; then
+            ko "B3" "accès : ${login} peut lire ${POINT_SAUVEGARDE}"
+            return
+        fi
+    done
+    ok "B3" "accès : ${POINT_SAUVEGARDE} en root:root 700, jdupont, support et kdurand ne peuvent pas le lire"
 }
 
-# test_B4_restauration : on copie etc/hostname de la plus ancienne version vers
-# un fichier temporaire et on le compare au vrai /etc/hostname. Le fichier
-# temporaire est supprimé aussitôt : le système n'est pas modifié.
+# test_B4_restauration : on restaure srv/projets de la dernière version dans un
+# dossier temporaire, puis on compare les ACL (getfacl) et le propriétaire,
+# le groupe et le mode (stat) avec le vrai /srv/projets. Le dossier temporaire
+# est supprimé aussitôt : le système n'est pas modifié.
 test_B4_restauration() {
-    local plus_ancienne
+    local derniere
     local temporaire
-    local resultat
+    local acl_copie
+    local acl_reelle
+    local stat_copie
+    local stat_reelle
 
-    plus_ancienne="$(lister_versions | head -n 1)"
-    if [ -z "$plus_ancienne" ]; then
+    derniere="$(lister_versions | tail -n 1)"
+    if [ -z "$derniere" ]; then
         ko "B4" "restauration : aucune version à restaurer"
         return
     fi
 
-    temporaire="$(mktemp)"
-    if cp -a "${DOSSIER_VERSIONS}/${plus_ancienne}/etc/hostname" "$temporaire" 2>/dev/null && cmp -s "$temporaire" /etc/hostname; then
-        resultat="ok"
-    else
-        resultat="ko"
-    fi
-    rm -f "$temporaire"
+    temporaire="$(mktemp -d)"
+    # cp -a garde propriétaires, modes et ACL, comme le ferait une vraie restauration.
+    cp -a "${DOSSIER_VERSIONS}/${derniere}/srv/projets" "${temporaire}/projets" 2>/dev/null
+    acl_copie="$(getfacl -c "${temporaire}/projets" 2>/dev/null)"
+    stat_copie="$(stat -c '%U:%G %a' "${temporaire}/projets" 2>/dev/null)"
+    rm -rf "$temporaire"
 
-    if [ "$resultat" = "ok" ]; then
-        ok "B4" "restauration : etc/hostname de la version ${plus_ancienne} est identique à /etc/hostname"
+    acl_reelle="$(getfacl -c /srv/projets 2>/dev/null)"
+    stat_reelle="$(stat -c '%U:%G %a' /srv/projets 2>/dev/null)"
+
+    if [ -z "$acl_copie" ] || [ -z "$stat_copie" ]; then
+        ko "B4" "restauration : srv/projets de la version ${derniere} n'a pas pu être restauré"
+    elif [ "$acl_copie" != "$acl_reelle" ]; then
+        ko "B4" "restauration : les ACL de srv/projets (version ${derniere}) diffèrent de /srv/projets"
+    elif [ "$stat_copie" != "$stat_reelle" ]; then
+        ko "B4" "restauration : propriétaire ou mode de srv/projets (${stat_copie}) diffère de /srv/projets (${stat_reelle})"
     else
-        ko "B4" "restauration : etc/hostname de la version ${plus_ancienne} absent ou différent de /etc/hostname"
+        ok "B4" "restauration : srv/projets de la version ${derniere} restauré avec les mêmes ACL et ${stat_reelle}"
+    fi
+}
+
+# test_B1_verrou : deux sauvegardes ne peuvent pas tourner en même temps. On
+# tient le verrou /run/sauvegarde.lock pendant 3 secondes avec flock, puis on
+# lance sauvegarde.sh : il doit refuser avec le message « déjà en cours ».
+# Comme il s'arrête au verrou, il ne crée aucune version : rien de durable
+# n'est modifié.
+test_B1_verrou() {
+    local sortie
+    local code
+
+    flock /run/sauvegarde.lock sleep 3 &
+    sleep 1
+
+    sortie="$(/usr/local/sbin/sauvegarde.sh 2>&1)"
+    code=$?
+    wait
+
+    if [ "$code" -ne 0 ] && echo "$sortie" | grep -q 'déjà en cours'; then
+        ok "B1" "verrou : une seconde sauvegarde est refusée pendant qu'une autre tourne"
+    else
+        ko "B1" "verrou : la seconde sauvegarde n'a pas été refusée (code ${code})"
     fi
 }
 
@@ -1199,6 +1244,7 @@ main() {
     test_B1_incrementale
     test_B1_acl_conservees
     test_B1_rotation
+    test_B1_verrou
     test_B2_timer_actif
     test_B2_journalisee
     test_B3_acces_admins

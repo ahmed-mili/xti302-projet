@@ -18,7 +18,7 @@ import time
 import paramiko
 
 # --- Réglages de la connexion (à adapter si la VM change) ---
-HOTE = "192.168.216.133"
+HOTE = "192.168.199.128"
 UTILISATEUR = "ahmed"
 CHEMIN_CLE = os.path.expanduser("~/.ssh/vm_tp_ed25519")
 

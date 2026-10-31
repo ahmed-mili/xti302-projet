@@ -81,7 +81,7 @@ Pour D3, les fichiers SUID présents sont tous des outils standards de Debian :
 - `rsync` renvoie le code 24 quand un fichier disparaît pendant la copie. Le script le traite comme un échec et ne garde pas la version.
 - `systemctl restart nftables` efface `f2b-table` jusqu'au prochain redémarrage de fail2ban. Il faut utiliser `reload`, qui ne touche que notre table (cas couvert par `test_J2_regles_fail2ban_apres_rechargement`).
 - `verifier.sh` lit la configuration SSH avec `sshd -T`. Un bloc `Match` ajouté plus tard ne serait vu que par `sshd -T -C ...`, que les tests n'appellent pas. Je n'ai pas non plus mesuré l'effet de `MaxAuthTries` sur un client qui présente plusieurs clés avec un agent SSH.
-- `analyse_logs.sh` ne compte pas la ligne « Connection closed by authenticating user », pour éviter de compter deux fois une connexion déjà vue. Une connexion qui ne laisse que cette ligne n'apparaît donc pas dans les comptes visés.
+- `analyse_logs.sh` compte comme un échec une connexion qui ne laisse que la ligne « Connection closed by authenticating user », une seule fois par connexion. Le compte visé n'est en revanche pas lu dans cette ligne : une telle connexion entre dans les échecs par adresse, mais son compte n'apparaît pas dans la liste des comptes visés.
 - La recherche d'adresses IPv4 n'est pas validée : elle ne vérifie pas que chaque nombre est inférieur à 256.
 - `find -xdev` (D3) ne descend pas dans `/sauvegardes`, qui est une autre partition réservée à root.
 - Aucun des bonus n'est traité (Lynis, ssh-audit, MFA, AppArmor).

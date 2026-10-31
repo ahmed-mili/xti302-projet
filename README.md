@@ -56,7 +56,7 @@ Le script affiche une ligne `[OK]` ou `[KO]` par test, puis le total. Il renvoie
 
 ## Poste client
 
-`outils/deployer.py` tourne sur le poste Windows (Python 3 et paramiko). La commande `lancer` s'exécute dans `~/projet` et doit commencer par `sudo` pour utiliser ce mot de passe. L'outil se connecte à la VM `192.168.216.133` avec la clé `~/.ssh/vm_tp_ed25519`, et à défaut avec un mot de passe. Ce mot de passe, qui sert aussi pour sudo, est lu dans la variable d'environnement `VM_SUDO_MDP`. Il n'est écrit nulle part.
+`outils/deployer.py` tourne sur le poste Windows (Python 3 et paramiko). La commande `lancer` s'exécute dans `~/projet` et doit commencer par `sudo` pour utiliser ce mot de passe. L'outil se connecte à la VM `192.168.199.128` avec la clé `~/.ssh/vm_tp_ed25519`, et à défaut avec un mot de passe. Ce mot de passe, qui sert aussi pour sudo, est lu dans la variable d'environnement `VM_SUDO_MDP`. Il n'est écrit nulle part.
 
 ```
 $env:VM_SUDO_MDP = '<mot de passe>'
